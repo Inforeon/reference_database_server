@@ -1,30 +1,23 @@
 from __future__ import annotations
 
-import os
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI
 
+from docsearch.config import Config, default_config
+from .dependencies import _app_config as _cfg_ref
 from .routes.documents import router as documents_router
 from .routes.index import router as index_router
 from .routes.search import router as search_router
-
-# Default DB location
-_DEFAULT_DB = os.path.expanduser("~/.local/share/docsearch/docsearch.db")
-
-
-def _get_db_path() -> str:
-    return os.environ.get("DOCSEARCH_DB", _DEFAULT_DB)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup / shutdown lifecycle."""
-    db_path = _get_db_path()
-    # Ensure DB directory exists
-    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    app.state.db_path = db_path
+    config = default_config()
+    config.db_path.parent.mkdir(parents=True, exist_ok=True)
+    # Store on app.state for routes to access via Depends
+    app.state.config = config
     yield
 
 
@@ -42,7 +35,8 @@ def create_app() -> FastAPI:
 
     @app.get("/api/health")
     async def health() -> dict:
-        return {"status": "ok", "db": app.state.db_path}
+        config: Config = app.state.config
+        return {"status": "ok", "home": str(config.home), "db": str(config.db_path)}
 
     return app
 

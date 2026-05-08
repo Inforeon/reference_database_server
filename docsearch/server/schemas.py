@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 
 class DocumentResponse(BaseModel):
+    id: int
     path: str
     filename: str
     directory: str
@@ -56,6 +57,21 @@ class IndexStats(BaseModel):
     removed: int
     skipped: int
     errors: int
+
+
+class ContentResponse(BaseModel):
+    """Extracted text content of a document."""
+    id: int
+    path: str
+    filename: str
+    content: str
+
+
+class UploadResponse(BaseModel):
+    """Response after uploading and indexing a file."""
+    id: int
+    path: str
+    filename: str
 
 
 class MetaPatch(BaseModel):

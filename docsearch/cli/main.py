@@ -1,22 +1,17 @@
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
 import click
 
-# Default DB location: ~/.local/share/docsearch/docsearch.db on Linux
-DEFAULT_DB_DIR = Path(os.path.expanduser("~/.local/share/docsearch"))
-DEFAULT_DB_PATH = DEFAULT_DB_DIR / "docsearch.db"
+from docsearch.config import Config
 
 
 @click.group()
-@click.option("--db", type=click.Path(), default=str(DEFAULT_DB_PATH), show_default=True, help="Path to SQLite database.")
+@click.option("--home", type=click.Path(), default=None, help="Database home directory (default: current working directory).")
 @click.pass_context
-def cli(ctx: click.Context, db: str) -> None:
+def cli(ctx: click.Context, home: str | None) -> None:
     """docsearch — Document metadata index and search engine."""
     ctx.ensure_object(dict)
-    ctx.obj["db_path"] = db
+    ctx.obj["config"] = Config(home=home)
 
 
 @cli.command()
@@ -25,18 +20,21 @@ def info(ctx: click.Context) -> None:
     """Show database location and index statistics."""
     from docsearch.core.repository import Repository
 
-    repo = Repository(ctx.obj["db_path"])
+    config = ctx.obj["config"]
+    repo = Repository(str(config.db_path))
     count = repo.count()
-    click.echo(f"Database: {ctx.obj['db_path']}")
+    click.echo(f"Home:       {config.home}")
+    click.echo(f"Database:   {config.db_path}")
     click.echo(f"Indexed documents: {count}")
     repo.close()
 
 
 # Register sub-commands
-from .commands import index, search, meta  # noqa: E402
+from .commands import index, search, meta, get  # noqa: E402
 cli.add_command(index)
 cli.add_command(search)
 cli.add_command(meta)
+cli.add_command(get)
 
 
 def main() -> None:

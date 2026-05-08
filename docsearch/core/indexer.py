@@ -8,6 +8,7 @@ from typing import Any, Optional
 
 from .models import Document
 from .repository import Repository
+from ..extractors import load_extractors
 
 logger = logging.getLogger(__name__)
 
@@ -17,19 +18,7 @@ class Indexer:
 
     def __init__(self, repository: Repository):
         self.repo = repository
-        self._extractors: dict[str, Any] = {}
-        self._load_extractors()
-
-    def _load_extractors(self) -> None:
-        """Dynamically load extractors and build extension→extractor map."""
-        from ..extractors.pdf import PdfExtractor
-        from ..extractors.docx import DocxExtractor
-        from ..extractors.markdown import MarkdownExtractor
-
-        for ext_class in (PdfExtractor, DocxExtractor, MarkdownExtractor):
-            extractor = ext_class()
-            for ext in extractor.supported_extensions:
-                self._extractors[ext] = extractor
+        self._extractors: dict[str, Any] = load_extractors()
 
     def _get_extractor(self, extension: str) -> Optional[Any]:
         return self._extractors.get(extension)

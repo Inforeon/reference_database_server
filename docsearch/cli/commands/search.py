@@ -40,7 +40,8 @@ def search(
     output_format: str,
 ) -> None:
     """Search indexed documents by content and metadata."""
-    repo = Repository(ctx["db_path"])
+    config = ctx["config"]
+    repo = Repository(str(config.db_path))
     try:
         sq = SearchQuery(
             q=query,
@@ -71,10 +72,9 @@ def _print_text(results: list) -> None:
         return
     for i, r in enumerate(results, 1):
         d = r.document
-        tags = d.combined_metadata
         tags_str = ", ".join(tag for tag in get_tags(d) if tag) if get_tags(d) else ""
         author = get_author(d) or ""
-        click.echo(f"\n[{i}] {d.filename}")
+        click.echo(f"\n[{i}] {d.filename} (id={d.id})")
         click.echo(f"    Path:    {d.path}")
         click.echo(f"    Type:    {d.extension}  Size: {d.size:,} bytes")
         if author:
@@ -91,6 +91,7 @@ def _print_json(results: list) -> None:
     for r in results:
         d = r.document
         data.append({
+            "id": d.id,
             "path": d.path,
             "filename": d.filename,
             "extension": d.extension,
@@ -105,10 +106,11 @@ def _print_csv(results: list) -> None:
     import csv
     import sys
     w = csv.writer(sys.stdout)
-    w.writerow(["path", "filename", "extension", "size", "author", "tags", "score"])
+    w.writerow(["id", "path", "filename", "extension", "size", "author", "tags", "score"])
     for r in results:
         d = r.document
         w.writerow([
+            d.id,
             d.path,
             d.filename,
             d.extension,

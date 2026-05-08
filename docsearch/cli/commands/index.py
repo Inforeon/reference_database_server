@@ -20,7 +20,8 @@ def index() -> None:
 @click.pass_obj
 def scan(ctx: dict, dirpath: str, no_recursive: bool) -> None:
     """Scan a directory tree and sync the index."""
-    repo = Repository(ctx["db_path"])
+    config = ctx["config"]
+    repo = Repository(str(config.db_path))
     try:
         indexer = Indexer(repo)
         stats = indexer.scan_directory(dirpath, recursive=not no_recursive)
@@ -39,7 +40,8 @@ def scan(ctx: dict, dirpath: str, no_recursive: bool) -> None:
 @click.pass_obj
 def add(ctx: dict, filepath: str) -> None:
     """Add a single file to the index."""
-    repo = Repository(ctx["db_path"])
+    config = ctx["config"]
+    repo = Repository(str(config.db_path))
     try:
         indexer = Indexer(repo)
         doc = indexer.add_file(filepath)
@@ -56,7 +58,8 @@ def add(ctx: dict, filepath: str) -> None:
 @click.pass_obj
 def remove(ctx: dict, filepath: str) -> None:
     """Remove a file from the index."""
-    repo = Repository(ctx["db_path"])
+    config = ctx["config"]
+    repo = Repository(str(config.db_path))
     try:
         indexer = Indexer(repo)
         if indexer.remove_file(filepath):
@@ -72,7 +75,8 @@ def remove(ctx: dict, filepath: str) -> None:
 @click.pass_obj
 def status(ctx: dict, filepath: str) -> None:
     """Check whether a file needs re-indexing."""
-    repo = Repository(ctx["db_path"])
+    config = ctx["config"]
+    repo = Repository(str(config.db_path))
     try:
         indexer = Indexer(repo)
         needs = indexer.needs_reindex(filepath)

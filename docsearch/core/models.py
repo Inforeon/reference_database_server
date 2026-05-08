@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Optional
@@ -31,25 +32,26 @@ class Document:
         return merged
 
     @classmethod
-    def from_row(cls, row: tuple | dict) -> "Document":
+    def from_row(cls, row: tuple | dict | sqlite3.Row) -> "Document":
         """Create from a database row (tuple, sqlite3.Row, or dict)."""
         # Support dict-like rows (sqlite3.Row is a mapping but not a dict)
         if hasattr(row, "keys"):
-            extracted_raw = row["extracted_metadata"] if "extracted_metadata" in row else None
-            sidecar_raw = row["sidecar_metadata"] if "sidecar_metadata" in row else None
-            indexed_raw = row["indexed_at"] if "indexed_at" in row else None
+            keys = row.keys()
+            extracted_raw = row["extracted_metadata"] if "extracted_metadata" in keys else None
+            sidecar_raw = row["sidecar_metadata"] if "sidecar_metadata" in keys else None
+            indexed_raw = row["indexed_at"] if "indexed_at" in keys else None
             return cls(
-                id=row["id"] if "id" in row else None,
+                id=row["id"] if "id" in keys else None,
                 path=row["path"],
                 filename=row["filename"],
                 directory=row["directory"],
                 extension=row["extension"],
-                size=row["size"] if "size" in row and row["size"] else 0,
-                mtime=row["mtime"] if "mtime" in row and row["mtime"] else 0.0,
-                content_hash=row["content_hash"] if "content_hash" in row and row["content_hash"] else "",
+                size=row["size"] if "size" in keys and row["size"] else 0,
+                mtime=row["mtime"] if "mtime" in keys and row["mtime"] else 0.0,
+                content_hash=row["content_hash"] if "content_hash" in keys and row["content_hash"] else "",
                 extracted_metadata=json.loads(extracted_raw) if extracted_raw else {},
                 sidecar_metadata=json.loads(sidecar_raw) if sidecar_raw else {},
-                full_text=row["full_text"] if "full_text" in row and row["full_text"] else "",
+                full_text=row["full_text"] if "full_text" in keys and row["full_text"] else "",
                 indexed_at=datetime.fromisoformat(indexed_raw) if indexed_raw else None,
             )
 

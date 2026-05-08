@@ -1,20 +1,16 @@
 from __future__ import annotations
 
-import os
 from fastapi import APIRouter, Depends, Query
 
 from docsearch.core.models import SearchQuery
 from docsearch.core.repository import Repository
+from docsearch.server.dependencies import get_config
 from docsearch.server.schemas import (
     DocumentResponse,
     SearchResultResponse,
 )
 
 router = APIRouter(prefix="/api/search", tags=["search"])
-
-
-def get_db_path() -> str:
-    return os.environ.get("DOCSEARCH_DB", os.path.expanduser("~/.local/share/docsearch/docsearch.db"))
 
 
 @router.get("", response_model=list[SearchResultResponse])
@@ -28,7 +24,7 @@ async def search(
     before: str = Query("", description="Modified before (ISO date)"),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db_path: str = Depends(get_db_path),
+    config = Depends(get_config),
 ) -> list[SearchResultResponse]:
     """Search indexed documents."""
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
@@ -45,7 +41,7 @@ async def search(
         limit=limit,
     )
 
-    repo = Repository(db_path)
+    repo = Repository(str(config.db_path))
     try:
         results = repo.search(sq)
         return [_to_search_response(r) for r in results]
@@ -57,6 +53,7 @@ def _to_search_response(r) -> SearchResultResponse:
     d = r.document
     return SearchResultResponse(
         document=DocumentResponse(
+            id=d.id,
             path=d.path,
             filename=d.filename,
             directory=d.directory,
