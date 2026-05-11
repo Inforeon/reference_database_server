@@ -1,90 +1,55 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 from pathlib import Path
 from typing import Any, Optional
 
 from .models import Document
 from .repository import Repository
+from .handlers import get_handler, GenericDocumentHandler
 from ..extractors import load_extractors
 
 logger = logging.getLogger(__name__)
 
 
 class Indexer:
-    """Scans directories and indexes documents into the repository."""
+    """Scans directories and indexes documents into the repository.
+
+    Delegates per-document processing to :class:`DocumentHandler` subclasses
+    selected by ``document_type``.
+    """
 
     def __init__(self, repository: Repository):
         self.repo = repository
         self._extractors: dict[str, Any] = load_extractors()
 
-    def _get_extractor(self, extension: str) -> Optional[Any]:
-        return self._extractors.get(extension)
-
-    def _compute_hash(self, filepath: Path) -> str:
-        """Compute SHA-256 hash of a file's contents."""
-        h = hashlib.sha256()
-        with open(filepath, "rb") as f:
-            for chunk in iter(lambda: f.read(8192), b""):
-                h.update(chunk)
-        return h.hexdigest()
-
-    def _load_sidecar(self, filepath: Path) -> dict[str, Any]:
-        """Load `.meta.json` sidecar file if it exists."""
-        sidecar_path = Path(str(filepath) + ".meta.json")
-        if sidecar_path.is_file():
-            try:
-                with open(sidecar_path, "r") as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, IOError) as e:
-                logger.warning("Failed to load sidecar %s: %s", sidecar_path, e)
-        return {}
-
-    def _build_document(self, filepath: Path) -> Optional[Document]:
-        """Build a Document object from a file on disk."""
-        suffix = filepath.suffix.lower().lstrip(".")
-
-        if not self._get_extractor(suffix):
-            return None
-
-        try:
-            stat = filepath.stat()
-            content_hash = self._compute_hash(filepath)
-
-            extractor = self._get_extractor(suffix)
-            extracted_meta, full_text = extractor.extract(str(filepath))
-            sidecar_meta = self._load_sidecar(filepath)
-
-            return Document(
-                path=str(filepath.resolve()),
-                filename=filepath.name,
-                directory=str(filepath.parent.resolve()),
-                extension=suffix,
-                size=stat.st_size,
-                mtime=stat.st_mtime,
-                content_hash=content_hash,
-                extracted_metadata=extracted_meta,
-                sidecar_metadata=sidecar_meta,
-                full_text=full_text,
-            )
-        except Exception as e:
-            logger.error("Failed to index %s: %s", filepath, e)
-            return None
-
     # ── public API ───────────────────────────────────────────────
 
-    def add_file(self, filepath: str | Path) -> Optional[Document]:
-        """Index a single file. Returns the Document or None on failure."""
+    def add_file(
+        self,
+        filepath: str | Path,
+        document_type: str = "generic",
+        extra_metadata: dict[str, Any] | None = None,
+        skip_bib: bool = False,
+    ) -> Optional[Document]:
+        """Index a single file. Returns the Document or None on failure.
+
+        ``document_type`` selects the handler (``"generic"``, ``"paper"``,
+        ``"textbook"``, …).  Defaults to ``"generic"``.
+
+        ``extra_metadata`` is a dict of user-supplied key/value pairs merged
+        into the sidecar metadata (e.g. ``{"doi": "10.1234/foo"}``).
+
+        ``skip_bib`` skips pdf2bib processing for papers (generates bibtex
+        from available metadata instead).
+        """
         p = Path(filepath).resolve()
         if not p.is_file():
             raise FileNotFoundError(f"File not found: {p}")
 
-        doc = self._build_document(p)
-        if doc:
-            self.repo.upsert(doc)
-        return doc
+        handler = get_handler(document_type, self.repo, extra_metadata=extra_metadata, skip_bib=skip_bib)
+        return handler.handle(p)
 
     def remove_file(self, filepath: str | Path) -> bool:
         """Remove a single file from the index."""
@@ -95,10 +60,17 @@ class Indexer:
         self,
         dirpath: str | Path,
         recursive: bool = True,
+        document_type: str = "generic",
+        extra_metadata: dict[str, Any] | None = None,
+        skip_bib: bool = False,
     ) -> dict[str, int]:
         """Scan a directory tree and sync the index.
 
         Returns a summary dict: ``{added, updated, removed, skipped, errors}``.
+
+        All discovered files are indexed with the given ``document_type``
+        (defaults to ``"generic"``). ``extra_metadata`` is applied to every
+        file in the scan. ``skip_bib`` skips pdf2bib for papers.
         """
         root = Path(dirpath).resolve()
         if not root.is_dir():
@@ -111,6 +83,8 @@ class Indexer:
             "skipped": 0,
             "errors": 0,
         }
+
+        handler = get_handler(document_type, self.repo, extra_metadata=extra_metadata, skip_bib=skip_bib)
 
         # Collect supported files on disk
         iterator = root.rglob("*") if recursive else root.iterdir()
@@ -131,9 +105,8 @@ class Indexer:
 
         # New files
         for path_str in disk_paths - indexed_paths:
-            doc = self._build_document(Path(path_str))
+            doc = handler.handle(Path(path_str))
             if doc:
-                self.repo.upsert(doc)
                 stats["added"] += 1
             else:
                 stats["errors"] += 1
@@ -145,9 +118,8 @@ class Indexer:
                 current_hash = self._compute_hash(p)
                 doc = self.repo.get(path_str)
                 if doc and doc.content_hash != current_hash:
-                    new_doc = self._build_document(p)
+                    new_doc = handler.handle(p)
                     if new_doc:
-                        self.repo.upsert(new_doc)
                         stats["updated"] += 1
                     else:
                         stats["errors"] += 1
@@ -177,3 +149,14 @@ class Indexer:
             return doc is None or doc.content_hash != current_hash
         except Exception:
             return True
+
+    # ── internal helpers ────────────────────────────────────────
+
+    @staticmethod
+    def _compute_hash(filepath: Path) -> str:
+        """Compute SHA-256 hash of a file's contents."""
+        h = hashlib.sha256()
+        with open(filepath, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                h.update(chunk)
+        return h.hexdigest()

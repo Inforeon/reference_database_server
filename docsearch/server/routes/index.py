@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
@@ -29,7 +30,7 @@ async def scan_dir(
     repo = Repository(str(config.db_path))
     try:
         indexer = Indexer(repo)
-        stats = indexer.scan_directory(body.dirpath, recursive=body.recursive)
+        stats = indexer.scan_directory(body.dirpath, recursive=body.recursive, document_type=body.document_type, extra_metadata=body.extra_metadata or None)
         return IndexStats(**stats)
     except NotADirectoryError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -46,9 +47,9 @@ async def add_file(
     repo = Repository(str(config.db_path))
     try:
         indexer = Indexer(repo)
-        doc = indexer.add_file(body.filepath)
+        doc = indexer.add_file(body.filepath, document_type=body.document_type, extra_metadata=body.extra_metadata or None)
         if doc:
-            return {"path": doc.path, "filename": doc.filename}
+            return {"path": doc.path, "filename": doc.filename, "document_type": doc.document_type}
         return None
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -75,6 +76,9 @@ async def remove_file(
 async def upload_file(
     directory: str = "",
     filename: str | None = None,
+    document_type: str = "generic",
+    extra_metadata: str | None = None,
+    skip_bib: bool = False,
     file: UploadFile = File(...),
     config = Depends(get_config),
 ) -> UploadResponse:
@@ -82,7 +86,16 @@ async def upload_file(
 
     The file is saved relative to the database home directory.
     If ``filename`` is not provided, the uploaded file's original name is used.
+
+    ``extra_metadata`` may be a JSON-encoded dict of key/value pairs
+    (e.g. ``{"doi": "10.1234/foo"}``).
     """
+    meta: dict[str, Any] = {}
+    if extra_metadata:
+        try:
+            meta = json.loads(extra_metadata)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="extra_metadata must be valid JSON.")
     root = config.home
     target_dir = root / directory if directory else root
 
@@ -109,7 +122,7 @@ async def upload_file(
     repo = Repository(str(config.db_path))
     try:
         indexer = Indexer(repo)
-        doc = indexer.add_file(str(target_path))
+        doc = indexer.add_file(str(target_path), document_type=document_type, extra_metadata=meta or None, skip_bib=skip_bib)
         if not doc:
             raise HTTPException(status_code=500, detail="Failed to index uploaded file.")
         indexed = repo.get(doc.path)

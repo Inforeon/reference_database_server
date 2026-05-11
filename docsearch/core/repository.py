@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS documents (
     filename TEXT NOT NULL,
     directory TEXT NOT NULL,
     extension TEXT NOT NULL,
+    document_type TEXT DEFAULT 'generic',
     size INTEGER DEFAULT 0,
     mtime REAL DEFAULT 0,
     content_hash TEXT DEFAULT '',
@@ -87,14 +88,15 @@ class Repository:
             cur.execute(
                 """
                 INSERT INTO documents (
-                    path, filename, directory, extension, size, mtime,
+                    path, filename, directory, extension, document_type, size, mtime,
                     content_hash, extracted_metadata, sidecar_metadata,
                     full_text, indexed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(path) DO UPDATE SET
                     filename = excluded.filename,
                     directory = excluded.directory,
                     extension = excluded.extension,
+                    document_type = excluded.document_type,
                     size = excluded.size,
                     mtime = excluded.mtime,
                     content_hash = excluded.content_hash,
@@ -108,6 +110,7 @@ class Repository:
                     doc.filename,
                     doc.directory,
                     doc.extension,
+                    doc.document_type,
                     doc.size,
                     doc.mtime,
                     doc.content_hash,

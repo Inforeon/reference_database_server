@@ -16,6 +16,7 @@ class Document:
     filename: str = ""
     directory: str = ""
     extension: str = ""
+    document_type: str = "generic"
     size: int = 0
     mtime: float = 0.0
     content_hash: str = ""
@@ -46,6 +47,7 @@ class Document:
                 filename=row["filename"],
                 directory=row["directory"],
                 extension=row["extension"],
+                document_type=row["document_type"] if "document_type" in keys and row["document_type"] else "generic",
                 size=row["size"] if "size" in keys and row["size"] else 0,
                 mtime=row["mtime"] if "mtime" in keys and row["mtime"] else 0.0,
                 content_hash=row["content_hash"] if "content_hash" in keys and row["content_hash"] else "",
@@ -62,13 +64,14 @@ class Document:
             filename=row[2],
             directory=row[3],
             extension=row[4],
-            size=row[5] or 0,
-            mtime=row[6] or 0.0,
-            content_hash=row[7] or "",
-            extracted_metadata=json.loads(row[8]) if row[8] else {},
-            sidecar_metadata=json.loads(row[9]) if row[9] else {},
-            full_text=row[10] or "",
-            indexed_at=datetime.fromisoformat(row[11]) if row[11] else None,
+            document_type=row[5] if len(row) > 5 and row[5] else "generic",
+            size=row[6] if len(row) > 6 and row[6] else 0,
+            mtime=row[7] if len(row) > 7 and row[7] else 0.0,
+            content_hash=row[8] if len(row) > 8 and row[8] else "",
+            extracted_metadata=json.loads(row[9]) if len(row) > 9 and row[9] else {},
+            sidecar_metadata=json.loads(row[10]) if len(row) > 10 and row[10] else {},
+            full_text=row[11] if len(row) > 11 and row[11] else "",
+            indexed_at=datetime.fromisoformat(row[12]) if len(row) > 12 and row[12] else None,
         )
 
 

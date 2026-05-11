@@ -14,6 +14,7 @@ class DocumentResponse(BaseModel):
     filename: str
     directory: str
     extension: str
+    document_type: str = "generic"
     size: int
     mtime: float
     metadata: dict[str, Any]
@@ -41,10 +42,14 @@ class SearchRequest(BaseModel):
 class ScanRequest(BaseModel):
     dirpath: str
     recursive: bool = True
+    document_type: str = "generic"
+    extra_metadata: dict[str, Any] = {}
 
 
 class AddFileRequest(BaseModel):
     filepath: str
+    document_type: str = "generic"
+    extra_metadata: dict[str, Any] = {}
 
 
 class RemoveFileRequest(BaseModel):

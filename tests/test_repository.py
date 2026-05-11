@@ -66,6 +66,7 @@ class TestDocument:
             "test.md",
             "/tmp",
             "md",
+            "generic",
             100,
             1700000000.0,
             "abc123",

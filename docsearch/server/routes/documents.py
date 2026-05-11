@@ -30,6 +30,7 @@ async def get_document(
             filename=doc.filename,
             directory=doc.directory,
             extension=doc.extension,
+            document_type=doc.document_type,
             size=doc.size,
             mtime=doc.mtime,
             metadata=doc.combined_metadata,
@@ -129,5 +130,34 @@ async def get_meta(
         if not doc:
             raise HTTPException(status_code=404, detail="Document not found")
         return doc.sidecar_metadata
+    finally:
+        repo.close()
+
+
+@router.get("/{doc_id}/bibtex")
+async def get_bibtex(
+    doc_id: int,
+    config = Depends(get_config),
+) -> dict:
+    """Export BibTeX for a research paper."""
+    from docsearch.core.handlers import _generate_bibtex_from_metadata
+
+    repo = Repository(str(config.db_path))
+    try:
+        doc = repo.get_by_id(doc_id)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+        if doc.document_type != "paper":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Document is not a paper (type={doc.document_type})",
+            )
+
+        bibtex_str = doc.sidecar_metadata.get("bibtex")
+        if not bibtex_str:
+            # Fallback: generate from available metadata
+            bibtex_str = _generate_bibtex_from_metadata(doc.combined_metadata)
+
+        return {"id": doc.id, "bibtex": bibtex_str}
     finally:
         repo.close()

@@ -62,6 +62,40 @@ def indexed_doc(db_home: str, tmp_path) -> Document:
     return fetched
 
 
+@pytest.fixture()
+def indexed_paper(db_home: str, tmp_path) -> Document:
+    """Create and index a paper-type document with bibtex in sidecar."""
+    file_path = tmp_path / "paper.pdf"
+    file_path.write_text("dummy paper content")
+
+    doc = Document(
+        path=str(file_path),
+        filename="paper.pdf",
+        directory=str(tmp_path),
+        extension="pdf",
+        document_type="paper",
+        size=200,
+        mtime=1700000000.0,
+        content_hash="xyz789",
+        extracted_metadata={"author": "Smith, Jane"},
+        sidecar_metadata={
+            "title": "A Great Paper",
+            "year": "2024",
+            "doi": "10.1234/great",
+            "bibtex": "@article{smith2024great,\n  title = {A Great Paper},\n  author = {Smith, Jane},\n  year = {2024},\n  doi = {10.1234/great},\n}",
+        },
+        full_text="Paper abstract and content here.",
+    )
+
+    from pathlib import Path
+    db_path = Path(db_home) / "docsearch.db"
+    repo = Repository(str(db_path))
+    repo.upsert(doc)
+    fetched = repo.get(str(file_path))
+    repo.close()
+    return fetched
+
+
 class TestGetContent:
     def test_returns_content(self, client, indexed_doc: Document):
         resp = client.get(f"/api/documents/{indexed_doc.id}/content")
@@ -181,3 +215,53 @@ class TestUpload:
             files={"file": ("image.png", b"\x89PNG\r\n\x1a\n", "image/png")},
         )
         assert resp.status_code == 500
+
+
+class TestBibtexEndpoint:
+    def test_returns_bibtex_for_paper(self, client, indexed_paper: Document):
+        resp = client.get(f"/api/documents/{indexed_paper.id}/bibtex")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["id"] == indexed_paper.id
+        assert "@article{smith2024great," in data["bibtex"]
+
+    def test_404_missing_document(self, client):
+        resp = client.get("/api/documents/9999/bibtex")
+        assert resp.status_code == 404
+
+    def test_400_non_paper_document(self, client, indexed_doc: Document):
+        """Generic documents should reject bibtex export."""
+        resp = client.get(f"/api/documents/{indexed_doc.id}/bibtex")
+        assert resp.status_code == 400
+
+    def test_fallback_bibtex_generation(self, client, db_home: str, tmp_path):
+        """Paper without stored bibtex should generate one from metadata."""
+        file_path = tmp_path / "nobb.pdf"
+        file_path.write_text("no bibtex paper")
+
+        doc = Document(
+            path=str(file_path),
+            filename="nobb.pdf",
+            directory=str(tmp_path),
+            extension="pdf",
+            document_type="paper",
+            size=50,
+            mtime=1700000000.0,
+            content_hash="nobib",
+            extracted_metadata={"author": "No Bib Author"},
+            sidecar_metadata={"title": "No BibTeX Paper", "year": "2023"},
+            full_text="content",
+        )
+
+        from pathlib import Path
+        db_path = Path(db_home) / "docsearch.db"
+        repo = Repository(str(db_path))
+        repo.upsert(doc)
+        fetched = repo.get(str(file_path))
+        repo.close()
+
+        resp = client.get(f"/api/documents/{fetched.id}/bibtex")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "@" in data["bibtex"]
+        assert "No BibTeX Paper" in data["bibtex"]

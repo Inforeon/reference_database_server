@@ -58,6 +58,7 @@ def _to_search_response(r) -> SearchResultResponse:
             filename=d.filename,
             directory=d.directory,
             extension=d.extension,
+            document_type=d.document_type,
             size=d.size,
             mtime=d.mtime,
             metadata=d.combined_metadata,
