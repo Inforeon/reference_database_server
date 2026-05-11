@@ -6,3 +6,4 @@ pymupdf>=1.23
 python-docx>=1.1
 pyyaml>=6.0
 pydantic>=2.5
+pdf2bib>=1.2
