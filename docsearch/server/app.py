@@ -5,7 +5,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from docsearch.config import Config, default_config
-from .dependencies import _app_config as _cfg_ref
 from .routes.documents import router as documents_router
 from .routes.index import router as index_router
 from .routes.papers import router as papers_router

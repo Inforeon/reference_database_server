@@ -421,14 +421,3 @@ def get_handler(
     if hasattr(handler, "skip_bib"):
         handler.skip_bib = skip_bib
     return handler
-
-
-def register_handler(doc_type: str, handler_cls: type[DocumentHandler]) -> None:
-    """Register a custom handler for a document type."""
-    _HANDLER_MAP[doc_type] = handler_cls
-    handler_cls.document_type = doc_type
-
-
-def registered_types() -> list[str]:
-    """Return all registered document types."""
-    return list(_HANDLER_MAP.keys())

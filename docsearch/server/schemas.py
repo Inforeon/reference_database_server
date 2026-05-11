@@ -27,18 +27,6 @@ class SearchResultResponse(BaseModel):
     snippet: str = ""
 
 
-class SearchRequest(BaseModel):
-    q: str = ""
-    scope: str = ""
-    file_type: str = ""
-    author: str = ""
-    tags: list[str] = []
-    after: str = ""
-    before: str = ""
-    offset: int = 0
-    limit: int = 50
-
-
 # ── Generic index requests (legacy, kept for backward compat) ────
 
 class ScanRequest(BaseModel):
@@ -62,15 +50,6 @@ class AddPaperRequest(BaseModel):
     doi: str | None = None
     skip_bib: bool = False
     extra_metadata: dict[str, Any] = {}
-
-
-class UploadPaperQuery(BaseModel):
-    """Query params for paper upload (for documentation)."""
-    directory: str = ""
-    filename: str | None = None
-    doi: str | None = None
-    skip_bib: bool = False
-    extra_metadata: str | None = None
 
 
 # ── Textbook-specific requests ───────────────────────────────────

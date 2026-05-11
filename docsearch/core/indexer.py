@@ -7,7 +7,7 @@ from typing import Any, Optional
 
 from .models import Document
 from .repository import Repository
-from .handlers import get_handler, GenericDocumentHandler
+from .handlers import get_handler
 from ..extractors import load_extractors
 
 logger = logging.getLogger(__name__)
