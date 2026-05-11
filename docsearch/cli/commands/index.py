@@ -11,35 +11,28 @@ from docsearch.core.repository import Repository
 
 @click.group(name="index")
 def index() -> None:
-    """Index management: scan directories, add or remove files."""
+    """Index management: scan directories, add or remove files.
+
+    For document-type-specific behaviour (e.g. paper DOI resolution), prefer
+    the dedicated ``papers`` and ``textbooks`` command groups.
+    """
     pass
 
 
 @index.command()
 @click.argument("dirpath", type=click.Path(exists=True, file_okay=False))
 @click.option("--no-recursive", is_flag=True, help="Only scan the top-level directory.")
-@click.option(
-    "--type", "document_type",
-    default="generic",
-    type=click.Choice(["generic", "paper", "textbook"], case_sensitive=False),
-    show_default=True,
-    help="Document type for indexing.",
-)
-@click.option(
-    "-m", "--meta", "meta_pairs",
-    multiple=True,
-    help="Extra metadata as KEY=VALUE (repeatable, JSON values supported).",
-)
-@click.option("--skip-bib", is_flag=True, help="Skip pdf2bib processing (papers only).")
 @click.pass_obj
-def scan(ctx: dict, dirpath: str, no_recursive: bool, document_type: str, meta_pairs: tuple[str, ...], skip_bib: bool) -> None:
-    """Scan a directory tree and sync the index."""
+def scan(ctx: dict, dirpath: str, no_recursive: bool) -> None:
+    """Scan a directory tree and sync the index (generic documents only).
+
+    For document-type-specific scanning use ``papers`` or ``textbooks`` commands.
+    """
     config = ctx["config"]
     repo = Repository(str(config.db_path))
     try:
         indexer = Indexer(repo)
-        extra_meta = _parse_meta_pairs(meta_pairs)
-        stats = indexer.scan_directory(dirpath, recursive=not no_recursive, document_type=document_type, extra_metadata=extra_meta or None, skip_bib=skip_bib)
+        stats = indexer.scan_directory(dirpath, recursive=not no_recursive, document_type="generic")
         click.echo(f"Scanned: {dirpath}")
         click.echo(f"  Added:     {stats['added']}")
         click.echo(f"  Updated:   {stats['updated']}")
@@ -52,28 +45,17 @@ def scan(ctx: dict, dirpath: str, no_recursive: bool, document_type: str, meta_p
 
 @index.command()
 @click.argument("filepath", type=click.Path(exists=True, dir_okay=False))
-@click.option(
-    "--type", "document_type",
-    default="generic",
-    type=click.Choice(["generic", "paper", "textbook"], case_sensitive=False),
-    show_default=True,
-    help="Document type for indexing.",
-)
-@click.option(
-    "-m", "--meta", "meta_pairs",
-    multiple=True,
-    help="Extra metadata as KEY=VALUE (repeatable, JSON values supported).",
-)
-@click.option("--skip-bib", is_flag=True, help="Skip pdf2bib processing (papers only).")
 @click.pass_obj
-def add(ctx: dict, filepath: str, document_type: str, meta_pairs: tuple[str, ...], skip_bib: bool) -> None:
-    """Add a single file to the index."""
+def add(ctx: dict, filepath: str) -> None:
+    """Add a single generic document to the index.
+
+    For document-type-specific behaviour use ``papers add`` or ``textbooks add``.
+    """
     config = ctx["config"]
     repo = Repository(str(config.db_path))
     try:
         indexer = Indexer(repo)
-        extra_meta = _parse_meta_pairs(meta_pairs)
-        doc = indexer.add_file(filepath, document_type=document_type, extra_metadata=extra_meta or None, skip_bib=skip_bib)
+        doc = indexer.add_file(filepath, document_type="generic")
         if doc:
             click.echo(f"Indexed: {doc.path} (type={doc.document_type})")
         else:
@@ -115,25 +97,3 @@ def status(ctx: dict, filepath: str) -> None:
             click.echo(f"{filepath} → up to date")
     finally:
         repo.close()
-
-
-# ── helpers ────────────────────────────────────────────────────────
-
-def _parse_meta_pairs(pairs: tuple[str, ...]) -> dict:
-    """Parse ``-m KEY=VALUE`` pairs into a dict.
-
-    Values are parsed as JSON when possible; otherwise kept as plain strings.
-    """
-    meta: dict = {}
-    for pair in pairs:
-        if "=" not in pair:
-            click.echo(f"Invalid metadata pair: {pair} (expected KEY=VALUE)", err=True)
-            continue
-        key, value = pair.split("=", 1)
-        # Try JSON parse first, fall back to plain string
-        try:
-            value = json.loads(value)
-        except (json.JSONDecodeError, TypeError):
-            pass
-        meta[key] = value
-    return meta

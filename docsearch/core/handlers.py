@@ -1,0 +1,434 @@
+from __future__ import annotations
+
+import json
+import logging
+import re
+from pathlib import Path
+from typing import Any, Optional
+
+from .models import Document
+from .repository import Repository
+from ..extractors import load_extractors
+
+logger = logging.getLogger(__name__)
+
+
+class DocumentHandler:
+    """Base class for document-type-specific indexing handlers.
+
+    Subclasses override individual steps of the pipeline to add type-specific
+    behaviour (e.g. paper metadata extraction, textbook chapter chunking).
+    """
+
+    # Registered document-type slug
+    document_type: str = "generic"
+
+    def __init__(self, repository: Repository) -> None:
+        self.repo = repository
+        self._extractors: dict[str, Any] = load_extractors()
+        self.extra_metadata: dict[str, Any] = {}
+
+    # ── pipeline hooks (override in subclasses) ────────────────
+
+    def pre_process(self, filepath: Path) -> None:
+        """Called before any extraction. Use for validation or setup."""
+        pass
+
+    def _has_extractor(self, filepath: Path) -> bool:
+        """Check whether an extractor is available for this file's extension."""
+        ext = filepath.suffix.lower().lstrip(".")
+        return ext in self._extractors
+
+    def extract_metadata(self, filepath: Path) -> dict[str, Any]:
+        """Extract structured metadata from the file.
+
+        Default: delegate to the extension-based extractor.
+        """
+        ext = filepath.suffix.lower().lstrip(".")
+        extractor = self._extractors.get(ext)
+        if extractor:
+            meta, _ = extractor.extract(str(filepath))
+            return meta
+        return {}
+
+    def extract_text(self, filepath: Path) -> str:
+        """Extract full-text content from the file.
+
+        Default: delegate to the extension-based extractor.
+        """
+        ext = filepath.suffix.lower().lstrip(".")
+        extractor = self._extractors.get(ext)
+        if extractor:
+            _, text = extractor.extract(str(filepath))
+            return text
+        return ""
+
+    def post_process(self, doc: Document) -> Document:
+        """Called after the Document is built but before upserting.
+
+        Return the (possibly modified) Document.
+        """
+        return doc
+
+    # ── internal helpers ────────────────────────────────────────
+
+    def _compute_hash(self, filepath: Path) -> str:
+        import hashlib
+        h = hashlib.sha256()
+        with open(filepath, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    def _load_sidecar(self, filepath: Path) -> dict[str, Any]:
+        sidecar_path = Path(str(filepath) + ".meta.json")
+        if sidecar_path.is_file():
+            try:
+                with open(sidecar_path, "r") as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, IOError) as e:
+                logger.warning("Failed to load sidecar %s: %s", sidecar_path, e)
+        return {}
+
+    def _save_sidecar(self, filepath: Path, metadata: dict[str, Any]) -> None:
+        """Persist user-supplied extra metadata into the sidecar file on disk."""
+        if not self.extra_metadata:
+            return
+        sidecar_path = Path(str(filepath) + ".meta.json")
+        # Load existing sidecar first (may have been created by other means)
+        data = self._load_sidecar(filepath)
+        # Merge: extra_metadata overrides existing sidecar values
+        data.update(self.extra_metadata)
+        try:
+            sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(sidecar_path, "w") as f:
+                json.dump(data, f, indent=2)
+        except IOError as e:
+            logger.warning("Failed to save sidecar %s: %s", sidecar_path, e)
+
+    # ── public entry point ──────────────────────────────────────
+
+    def handle(self, filepath: Path) -> Optional[Document]:
+        """Run the full indexing pipeline for a single file.
+
+        Returns the indexed Document, or None on failure.
+        """
+        if not self._has_extractor(filepath):
+            return None
+
+        self.pre_process(filepath)
+
+        try:
+            stat = filepath.stat()
+            content_hash = self._compute_hash(filepath)
+
+            extracted_meta = self.extract_metadata(filepath)
+            full_text = self.extract_text(filepath)
+            sidecar_meta = self._load_sidecar(filepath)
+
+            # Merge user-supplied extra metadata into sidecar metadata
+            merged_sidecar = {**sidecar_meta, **self.extra_metadata}
+
+            doc = Document(
+                path=str(filepath.resolve()),
+                filename=filepath.name,
+                directory=str(filepath.parent.resolve()),
+                extension=filepath.suffix.lower().lstrip("."),
+                document_type=self.document_type,
+                size=stat.st_size,
+                mtime=stat.st_mtime,
+                content_hash=content_hash,
+                extracted_metadata=extracted_meta,
+                sidecar_metadata=merged_sidecar,
+                full_text=full_text,
+            )
+
+            doc = self.post_process(doc)
+            self.repo.upsert(doc)
+
+            # Persist extra metadata to the sidecar file on disk
+            self._save_sidecar(filepath, merged_sidecar)
+
+            return doc
+        except Exception as e:
+            logger.error("Handler failed on %s: %s", filepath, e)
+            return None
+
+
+class GenericDocumentHandler(DocumentHandler):
+    """Default handler — standard extract & index."""
+
+    document_type = "generic"
+
+
+# ── BibTeX helpers ──────────────────────────────────────────────
+
+def _normalize_title(title: str) -> str:
+    """Normalize a title for fuzzy comparison (lowercase, strip punctuation/extra ws)."""
+    title = title.lower().strip()
+    # Remove common punctuation
+    title = re.sub(r"[^\w\s]", "", title)
+    # Collapse whitespace
+    title = re.sub(r"\s+", " ", title)
+    return title
+
+
+def _titles_match(a: str, b: str) -> bool:
+    """Check whether two titles are plausibly the same (after normalization)."""
+    na, nb = _normalize_title(a), _normalize_title(b)
+    if not na or not nb:
+        return False
+    # Exact match after normalization
+    if na == nb:
+        return True
+    # One contains the other (handles trailing subtitles, colons, etc.)
+    if na in nb or nb in na:
+        return True
+    return False
+
+
+def _format_author_dict(author_info: dict[str, Any]) -> str:
+    """Format a single author dict (from pdf2bib) as 'Last, First'.
+
+    Handles ``{"given": "Daniil A.", "family": "Boiko"}`` style entries.
+    Falls back to string representation if keys are missing.
+    """
+    given = author_info.get("given", "")
+    family = author_info.get("family", "")
+    if given and family:
+        return f"{family}, {given}"
+    if family:
+        return family
+    if given:
+        return given
+    # Last resort: try to extract name from the raw dict
+    return str(author_info)
+
+
+def _format_authors_bib(authors_list: list[dict[str, Any]]) -> str:
+    """Format a list of author dicts into a BibTeX-style author string.
+
+    Preserves ordering from the pdf2bib ``sequence`` field when available.
+    """
+    # Sort by sequence if present ("first" comes before "additional")
+    def sort_key(a: dict[str, Any]) -> int:
+        seq = a.get("sequence", "additional")
+        return 0 if seq == "first" else 1
+
+    sorted_authors = sorted(authors_list, key=sort_key)
+    parts = [_format_author_dict(a) for a in sorted_authors]
+    return " and ".join(parts)
+
+
+def _generate_bibtex_from_metadata(meta: dict[str, Any], citation_key: str | None = None) -> str:
+    """Generate a minimal BibTeX entry from structured metadata.
+
+    Expects keys like: title, author(s), year, journal, volume, pages, doi, url.
+    Falls back gracefully when fields are missing.
+
+    Supports ``authors_bib`` (list of dicts from pdf2bib) as well as plain
+    ``author`` (string or list of strings).
+    """
+    entry_type = meta.get("ENTRYTYPE", "misc")
+    key = citation_key or meta.get("citation_key", "unknown")
+
+    # Map known BibTeX fields
+    field_map = {
+        "title": "title",
+        "year": "year",
+        "journal": "journal",
+        "booktitle": "booktitle",
+        "volume": "volume",
+        "number": "number",
+        "pages": "pages",
+        "doi": "doi",
+        "url": "url",
+        "publisher": "publisher",
+        "school": "school",
+        "institution": "institution",
+        "address": "address",
+        "month": "month",
+        "note": "note",
+        "abstract": "abstract",
+    }
+
+    lines = [f"@{entry_type}{{{key},"]
+
+    # Handle author field specially — supports multiple formats
+    author_value = None
+    if meta.get("authors_bib"):
+        # pdf2bib format: list of dicts with given/family/etc.
+        author_value = _format_authors_bib(meta["authors_bib"])
+    elif meta.get("author"):
+        raw = meta["author"]
+        if isinstance(raw, list):
+            author_value = " and ".join(str(v) for v in raw)
+        else:
+            author_value = str(raw)
+
+    if author_value:
+        lines.append(f"  author = {{{author_value}}},")
+
+    for bib_key, meta_key in field_map.items():
+        value = meta.get(meta_key) or meta.get(bib_key)
+        if value:
+            if isinstance(value, list):
+                value = " and ".join(str(v) for v in value)
+            # Escape backslashes first, then ampersands
+            value = str(value).replace("\\", "\\\\").replace("&", "\\&")
+            lines.append(f"  {bib_key} = {{{value}}},")
+
+    lines.append("}")
+    return "\n".join(lines)
+
+
+class PaperDocumentHandler(DocumentHandler):
+    """Handler for research papers using pdf2bib for bibliographic extraction.
+
+    Workflow:
+    1. If a DOI is provided in ``extra_metadata``, embed it into the PDF
+       via ``pdf2doi.add_found_identifier_to_metadata`` before calling pdf2bib.
+    2. Run pdf2bib to extract full bibliographic metadata.
+    3. If no DOI was provided, validate that the extracted title matches the
+       PDF's own metadata title; raise an error if they diverge.
+    4. Store the raw bibtex string and parsed metadata (including ordered
+       author list) into ``extra_metadata`` so they persist in the sidecar.
+
+    Set ``skip_bib = True`` to skip pdf2bib entirely and generate bibtex
+    from available metadata only.
+    """
+
+    document_type = "paper"
+    skip_bib: bool = False
+
+    def pre_process(self, filepath: Path) -> None:
+        """Run pdf2bib (unless skipped) to enrich extra_metadata with bibliographic data."""
+        if self.skip_bib:
+            return
+
+        # Step 1: Embed user-provided DOI into PDF metadata if available
+        doi = self.extra_metadata.get("doi")
+        if doi:
+            try:
+                from pdf2doi import add_found_identifier_to_metadata
+                add_found_identifier_to_metadata(str(filepath), doi)
+                logger.info("Embedded DOI '%s' into %s", doi, filepath)
+            except Exception as e:
+                logger.warning("Failed to embed DOI into %s: %s", filepath, e)
+
+        # Step 2: Run pdf2bib
+        try:
+            import pdf2bib
+            pdf2bib.config.set("verbose", False)
+            results = pdf2bib.pdf2bib(str(filepath))
+        except Exception as e:
+            raise RuntimeError(
+                f"pdf2bib failed on {filepath}: {e}. "
+                "Try providing a DOI manually (-m doi=...) or use --skip-bib."
+            ) from e
+
+        if not results:
+            raise RuntimeError(
+                f"pdf2bib returned no results for {filepath}. "
+                "Try providing a DOI manually (-m doi=...) or use --skip-bib."
+            )
+
+        bib_meta = results.get("metadata", {}) or {}
+        bibtex_str = results.get("bibtex", "") or ""
+
+        # Step 3: Title validation when no DOI was explicitly provided
+        if not doi and bib_meta.get("title"):
+            pdf_title = self._get_pdf_title(filepath)
+            if pdf_title and not _titles_match(bib_meta["title"], pdf_title):
+                raise RuntimeError(
+                    f"Title mismatch for {filepath}: pdf2bib returned "
+                    f"'{bib_meta['title']}' but PDF metadata says '{pdf_title}'. "
+                    "The wrong DOI may have been detected. "
+                    "Please provide the correct DOI manually (-m doi=...)."
+                )
+
+        # Step 4: Move pdf2bib author list to ``authors_bib`` to avoid
+        # conflicting with the PDF's own ``author`` metadata field.
+        if bib_meta.get("author"):
+            bib_meta["authors_bib"] = bib_meta.pop("author")
+
+        # Step 5: Merge bibliographic data into extra_metadata.
+        # User-provided values take precedence over pdf2bib output, so we
+        # apply user extras *after* the merge for any overlapping keys.
+        user_overrides = {k: v for k, v in self.extra_metadata.items()
+                          if k in bib_meta}
+        self.extra_metadata.update(bib_meta)
+        self.extra_metadata.update(user_overrides)
+        if bibtex_str:
+            self.extra_metadata["bibtex"] = bibtex_str
+
+    def _get_pdf_title(self, filepath: Path) -> str:
+        """Extract the title from the PDF's own metadata using PyMuPDF."""
+        try:
+            import fitz
+            doc = fitz.open(str(filepath))
+            meta = doc.metadata
+            doc.close()
+            return meta.get("title", "")
+        except Exception:
+            return ""
+
+    def post_process(self, doc: Document) -> Document:
+        """Ensure bibtex is available even if pdf2bib was skipped."""
+        if self.skip_bib and not self.extra_metadata.get("bibtex"):
+            # Generate bibtex from whatever metadata we have
+            combined = {**doc.extracted_metadata, **doc.sidecar_metadata}
+            bibtex = _generate_bibtex_from_metadata(combined)
+            doc.sidecar_metadata["bibtex"] = bibtex
+        return doc
+
+
+class TextbookDocumentHandler(DocumentHandler):
+    """Handler for textbooks.
+
+    Future: chunk into chapters/sections, store per-chapter metadata.
+    For now behaves identically to generic.
+    """
+
+    document_type = "textbook"
+
+
+# ── registry ────────────────────────────────────────────────────
+
+_HANDLER_MAP: dict[str, type[DocumentHandler]] = {
+    "generic": GenericDocumentHandler,
+    "paper": PaperDocumentHandler,
+    "textbook": TextbookDocumentHandler,
+}
+
+
+def get_handler(
+    document_type: str,
+    repository: Repository,
+    extra_metadata: dict[str, Any] | None = None,
+    skip_bib: bool = False,
+) -> DocumentHandler:
+    """Return a DocumentHandler instance for the given document type.
+
+    ``extra_metadata`` is merged into sidecar metadata during indexing.
+    ``skip_bib`` skips pdf2bib processing for papers (generates bibtex from
+    available metadata instead).
+    """
+    cls = _HANDLER_MAP.get(document_type, GenericDocumentHandler)
+    handler = cls(repository)
+    if extra_metadata:
+        handler.extra_metadata = dict(extra_metadata)
+    if hasattr(handler, "skip_bib"):
+        handler.skip_bib = skip_bib
+    return handler
+
+
+def register_handler(doc_type: str, handler_cls: type[DocumentHandler]) -> None:
+    """Register a custom handler for a document type."""
+    _HANDLER_MAP[doc_type] = handler_cls
+    handler_cls.document_type = doc_type
+
+
+def registered_types() -> list[str]:
+    """Return all registered document types."""
+    return list(_HANDLER_MAP.keys())

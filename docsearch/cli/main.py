@@ -30,12 +30,14 @@ def info(ctx: click.Context) -> None:
 
 
 # Register sub-commands
-from .commands import index, search, meta, get, bibtex  # noqa: E402
+from .commands import index, search, meta, get, bibtex, papers, textbooks  # noqa: E402
 cli.add_command(index)
 cli.add_command(search)
 cli.add_command(meta)
 cli.add_command(get)
 cli.add_command(bibtex)
+cli.add_command(papers)
+cli.add_command(textbooks)
 
 
 def main() -> None:

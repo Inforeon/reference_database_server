@@ -39,6 +39,8 @@ class SearchRequest(BaseModel):
     limit: int = 50
 
 
+# ── Generic index requests (legacy, kept for backward compat) ────
+
 class ScanRequest(BaseModel):
     dirpath: str
     recursive: bool = True
@@ -51,6 +53,35 @@ class AddFileRequest(BaseModel):
     document_type: str = "generic"
     extra_metadata: dict[str, Any] = {}
 
+
+# ── Paper-specific requests ──────────────────────────────────────
+
+class AddPaperRequest(BaseModel):
+    """Request to add a research paper to the index."""
+    filepath: str
+    doi: str | None = None
+    skip_bib: bool = False
+    extra_metadata: dict[str, Any] = {}
+
+
+class UploadPaperQuery(BaseModel):
+    """Query params for paper upload (for documentation)."""
+    directory: str = ""
+    filename: str | None = None
+    doi: str | None = None
+    skip_bib: bool = False
+    extra_metadata: str | None = None
+
+
+# ── Textbook-specific requests ───────────────────────────────────
+
+class AddTextbookRequest(BaseModel):
+    """Request to add a textbook to the index."""
+    filepath: str
+    extra_metadata: dict[str, Any] = {}
+
+
+# ── Generic responses ────────────────────────────────────────────
 
 class RemoveFileRequest(BaseModel):
     filepath: str
@@ -73,10 +104,15 @@ class ContentResponse(BaseModel):
 
 
 class UploadResponse(BaseModel):
-    """Response after uploading and indexing a file."""
+    """Generic response after uploading and indexing a file."""
     id: int
     path: str
     filename: str
+
+
+# Type aliases for clarity at call sites
+PaperUploadResponse = UploadResponse
+TextbookUploadResponse = UploadResponse
 
 
 class MetaPatch(BaseModel):

@@ -26,7 +26,11 @@ async def scan_dir(
     body: ScanRequest,
     config = Depends(get_config),
 ) -> IndexStats:
-    """Scan a directory tree and sync the index."""
+    """Scan a directory tree and sync the index.
+
+    For document-type-specific behaviour (e.g. paper DOI resolution), prefer
+    the dedicated ``/api/papers`` or ``/api/textbooks`` endpoints.
+    """
     repo = Repository(str(config.db_path))
     try:
         indexer = Indexer(repo)
@@ -43,7 +47,11 @@ async def add_file(
     body: AddFileRequest,
     config = Depends(get_config),
 ) -> dict | None:
-    """Add a single file to the index."""
+    """Add a single file to the index.
+
+    For document-type-specific behaviour (e.g. paper DOI resolution), prefer
+    the dedicated ``/api/papers`` or ``/api/textbooks`` endpoints.
+    """
     repo = Repository(str(config.db_path))
     try:
         indexer = Indexer(repo)
@@ -78,17 +86,13 @@ async def upload_file(
     filename: str | None = None,
     document_type: str = "generic",
     extra_metadata: str | None = None,
-    skip_bib: bool = False,
     file: UploadFile = File(...),
     config = Depends(get_config),
 ) -> UploadResponse:
     """Upload a file and index it automatically.
 
-    The file is saved relative to the database home directory.
-    If ``filename`` is not provided, the uploaded file's original name is used.
-
-    ``extra_metadata`` may be a JSON-encoded dict of key/value pairs
-    (e.g. ``{"doi": "10.1234/foo"}``).
+    For document-type-specific behaviour (e.g. paper DOI resolution), prefer
+    the dedicated ``/api/papers/upload`` or ``/api/textbooks/upload`` endpoints.
     """
     meta: dict[str, Any] = {}
     if extra_metadata:
@@ -122,7 +126,7 @@ async def upload_file(
     repo = Repository(str(config.db_path))
     try:
         indexer = Indexer(repo)
-        doc = indexer.add_file(str(target_path), document_type=document_type, extra_metadata=meta or None, skip_bib=skip_bib)
+        doc = indexer.add_file(str(target_path), document_type=document_type, extra_metadata=meta or None)
         if not doc:
             raise HTTPException(status_code=500, detail="Failed to index uploaded file.")
         indexed = repo.get(doc.path)

@@ -82,7 +82,10 @@ def indexed_paper(db_home: str, tmp_path) -> Document:
             "title": "A Great Paper",
             "year": "2024",
             "doi": "10.1234/great",
-            "bibtex": "@article{smith2024great,\n  title = {A Great Paper},\n  author = {Smith, Jane},\n  year = {2024},\n  doi = {10.1234/great},\n}",
+            "authors_bib": [
+                {"given": "Jane", "family": "Smith", "sequence": "first"},
+            ],
+            "bibtex": "@article{smith2024great,\n  author = {Smith, Jane},\n  title = {A Great Paper},\n  year = {2024},\n  doi = {10.1234/great},\n}",
         },
         full_text="Paper abstract and content here.",
     )
@@ -265,3 +268,108 @@ class TestBibtexEndpoint:
         data = resp.json()
         assert "@" in data["bibtex"]
         assert "No BibTeX Paper" in data["bibtex"]
+
+
+class TestPaperEndpoints:
+    def test_add_paper(self, client, db_home: str, tmp_path):
+        """POST /api/papers/add should index a file as a paper."""
+        file_path = tmp_path / "paper.pdf"
+        file_path.write_text("pdf content")
+
+        resp = client.post(
+            "/api/papers/add",
+            json={"filepath": str(file_path), "skip_bib": True},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["filename"] == "paper.pdf"
+
+    def test_add_paper_with_doi(self, client, db_home: str, tmp_path):
+        """POST /api/papers/add with DOI should include it in metadata."""
+        file_path = tmp_path / "doi_paper.pdf"
+        file_path.write_text("pdf content")
+
+        resp = client.post(
+            "/api/papers/add",
+            json={
+                "filepath": str(file_path),
+                "doi": "10.1234/test",
+                "skip_bib": True,
+            },
+        )
+        assert resp.status_code == 200
+
+    def test_add_paper_missing_file(self, client):
+        """POST /api/papers/add with nonexistent path should 404."""
+        resp = client.post(
+            "/api/papers/add",
+            json={"filepath": "/nonexistent/file.pdf"},
+        )
+        assert resp.status_code == 404
+
+    def test_upload_paper(self, client, db_home: str):
+        """POST /api/papers/upload should save and index a paper."""
+        resp = client.post(
+            "/api/papers/upload?skip_bib=true",
+            files={"file": ("test.pdf", b"%PDF-1.4 fake pdf", "application/pdf")},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["filename"] == "test.pdf"
+
+    def test_upload_paper_with_doi(self, client, db_home: str):
+        """POST /api/papers/upload with DOI query param."""
+        resp = client.post(
+            "/api/papers/upload?doi=10.1234/my-paper&skip_bib=true",
+            files={"file": ("doi_test.pdf", b"%PDF-1.4 fake pdf", "application/pdf")},
+        )
+        assert resp.status_code == 200
+
+    def test_upload_paper_rejects_path_traversal(self, client, db_home: str):
+        """POST /api/papers/upload should reject directory traversal."""
+        resp = client.post(
+            "/api/papers/upload?directory=../../etc",
+            files={"file": ("evil.pdf", b"%PDF-1.4", "application/pdf")},
+        )
+        assert resp.status_code == 400
+
+
+class TestTextbookEndpoints:
+    def test_add_textbook(self, client, db_home: str, tmp_path):
+        """POST /api/textbooks/add should index a file as a textbook."""
+        file_path = tmp_path / "textbook.pdf"
+        file_path.write_text("pdf content")
+
+        resp = client.post(
+            "/api/textbooks/add",
+            json={"filepath": str(file_path)},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["filename"] == "textbook.pdf"
+
+    def test_add_textbook_missing_file(self, client):
+        """POST /api/textbooks/add with nonexistent path should 404."""
+        resp = client.post(
+            "/api/textbooks/add",
+            json={"filepath": "/nonexistent/book.pdf"},
+        )
+        assert resp.status_code == 404
+
+    def test_upload_textbook(self, client, db_home: str):
+        """POST /api/textbooks/upload should save and index a textbook."""
+        resp = client.post(
+            "/api/textbooks/upload",
+            files={"file": ("book.pdf", b"%PDF-1.4 fake pdf", "application/pdf")},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["filename"] == "book.pdf"
+
+    def test_upload_textbook_rejects_path_traversal(self, client, db_home: str):
+        """POST /api/textbooks/upload should reject directory traversal."""
+        resp = client.post(
+            "/api/textbooks/upload?directory=../../tmp",
+            files={"file": ("evil.pdf", b"%PDF-1.4", "application/pdf")},
+        )
+        assert resp.status_code == 400

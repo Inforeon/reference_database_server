@@ -8,6 +8,8 @@ from docsearch.config import Config, default_config
 from .dependencies import _app_config as _cfg_ref
 from .routes.documents import router as documents_router
 from .routes.index import router as index_router
+from .routes.papers import router as papers_router
+from .routes.textbooks import router as textbooks_router
 from .routes.search import router as search_router
 
 
@@ -32,6 +34,8 @@ def create_app() -> FastAPI:
     app.include_router(index_router)
     app.include_router(search_router)
     app.include_router(documents_router)
+    app.include_router(papers_router)
+    app.include_router(textbooks_router)
 
     @app.get("/api/health")
     async def health() -> dict:
