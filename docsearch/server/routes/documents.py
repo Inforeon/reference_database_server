@@ -6,9 +6,17 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 
+from docsearch.core.handlers import _generate_bibtex_from_metadata
+from docsearch.core.indexer import Indexer
 from docsearch.core.repository import Repository
 from docsearch.server.dependencies import get_config
-from docsearch.server.schemas import ContentResponse, DocumentResponse, MetaPatch
+from docsearch.server.schemas import (
+    ContentResponse,
+    DocumentResponse,
+    MetaPatch,
+    MoveDocumentRequest,
+    MoveDocumentResponse,
+)
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 
@@ -108,8 +116,6 @@ async def patch_meta(
             json.dump(data, f, indent=2)
 
         # Re-index to pick up new sidecar
-        from docsearch.core.indexer import Indexer
-
         indexer = Indexer(repo)
         indexer.add_file(doc.path)
 
@@ -140,8 +146,6 @@ async def get_bibtex(
     config = Depends(get_config),
 ) -> dict:
     """Export BibTeX for a research paper."""
-    from docsearch.core.handlers import _generate_bibtex_from_metadata
-
     repo = Repository(str(config.db_path))
     try:
         doc = repo.get_by_id(doc_id)
@@ -159,5 +163,64 @@ async def get_bibtex(
             bibtex_str = _generate_bibtex_from_metadata(doc.combined_metadata)
 
         return {"id": doc.id, "bibtex": bibtex_str}
+    finally:
+        repo.close()
+
+
+@router.post("/{doc_id}/move", response_model=MoveDocumentResponse)
+async def move_document(
+    doc_id: int,
+    body: MoveDocumentRequest,
+    config = Depends(get_config),
+) -> MoveDocumentResponse:
+    """Move a document to a new location within the database home.
+
+    The destination path is resolved relative to the database home when
+    relative, and must remain a descendant of the database home.
+    Parent directories are created automatically.
+    """
+    root = config.home
+
+    # Resolve destination relative to database home
+    dest_p = Path(body.destination)
+    if dest_p.is_absolute():
+        dest_p = dest_p.resolve()
+    else:
+        dest_p = (root / dest_p).resolve()
+
+    # Enforce containment within database home
+    if not str(dest_p).startswith(str(root)):
+        raise HTTPException(
+            status_code=400,
+            detail="Destination must be within the database home.",
+        )
+
+    repo = Repository(str(config.db_path))
+    try:
+        doc = repo.get_by_id(doc_id)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+
+        old_path = doc.path
+
+        # Also validate the source is inside the database home
+        source_p = Path(old_path).resolve()
+        if not str(source_p).startswith(str(root)):
+            raise HTTPException(
+                status_code=400,
+                detail="Source document is outside the database home.",
+            )
+
+        indexer = Indexer(repo)
+        new_doc = indexer.move_file(old_path, str(dest_p))
+        if new_doc is None:
+            raise HTTPException(status_code=404, detail="Source document not found in index")
+
+        return MoveDocumentResponse(
+            id=new_doc.id,
+            old_path=old_path,
+            new_path=new_doc.path,
+            filename=new_doc.filename,
+        )
     finally:
         repo.close()

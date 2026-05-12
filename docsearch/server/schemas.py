@@ -66,6 +66,19 @@ class RemoveFileRequest(BaseModel):
     filepath: str
 
 
+class MoveDocumentRequest(BaseModel):
+    """Request to move a document to a new location within the database home."""
+    destination: str
+
+
+class MoveDocumentResponse(BaseModel):
+    """Response after successfully moving a document."""
+    id: int
+    old_path: str
+    new_path: str
+    filename: str
+
+
 class IndexStats(BaseModel):
     added: int
     updated: int

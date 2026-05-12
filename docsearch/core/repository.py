@@ -194,6 +194,25 @@ class Repository:
         )
         return cur.fetchone() is not None
 
+    def rename(self, old_path: str, new_path: str) -> bool:
+        """Update the path, filename, and directory of an existing document.
+
+        Preserves the internal ``id`` so that foreign-key references
+        (e.g. textbook chapters) remain valid.  Returns True when a row
+        was updated.
+        """
+        new_p = Path(new_path)
+        with self.transaction() as cur:
+            cur.execute(
+                """
+                UPDATE documents
+                SET path = ?, filename = ?, directory = ?
+                WHERE path = ?
+                """,
+                (str(new_p), new_p.name, str(new_p.parent), old_path),
+            )
+            return cur.rowcount > 0
+
     def all_paths(self) -> list[str]:
         """Return all indexed paths."""
         cur = self._conn.execute("SELECT path FROM documents ORDER BY path")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import shutil
 from pathlib import Path
 from typing import Any, Optional
 
@@ -55,6 +56,43 @@ class Indexer:
         """Remove a single file from the index."""
         p = Path(filepath).resolve()
         return self.repo.remove(str(p))
+
+    def move_file(
+        self,
+        old_filepath: str | Path,
+        new_filepath: str | Path,
+    ) -> Optional[Document]:
+        """Move a file on disk and update its index entry.
+
+        Moves both the source file and its ``.meta.json`` sidecar (if present)
+        to the new location, then updates the database path in-place so the
+        internal ``id`` is preserved.  Returns the updated Document or None
+        when the source was not found.
+        """
+        old_p = Path(old_filepath).resolve()
+        new_p = Path(new_filepath).resolve()
+
+        doc = self.repo.get(str(old_p))
+        if doc is None:
+            return None
+
+        # Create parent directories on the destination side
+        new_p.parent.mkdir(parents=True, exist_ok=True)
+
+        # Move the actual file
+        shutil.move(str(old_p), str(new_p))
+
+        # Move the sidecar metadata file if it exists
+        old_sidecar = Path(str(old_p) + ".meta.json")
+        new_sidecar = Path(str(new_p) + ".meta.json")
+        if old_sidecar.is_file():
+            shutil.move(str(old_sidecar), str(new_sidecar))
+
+        # Update DB row in-place (preserves id)
+        self.repo.rename(str(old_p), str(new_p))
+
+        # Return the refreshed document
+        return self.repo.get(str(new_p))
 
     def scan_directory(
         self,
