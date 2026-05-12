@@ -373,3 +373,114 @@ class TestTextbookEndpoints:
             files={"file": ("evil.pdf", b"%PDF-1.4", "application/pdf")},
         )
         assert resp.status_code == 400
+
+
+class TestChapterEndpoints:
+    """Tests for textbook chapter API endpoints."""
+
+    def _index_textbook_with_chapters(self, client, db_home: str):
+        """Create a textbook PDF with TOC, index it, and return its doc_id."""
+        import fitz
+        from pathlib import Path
+
+        home = Path(db_home)
+        pdf_path = home / "test_book.pdf"
+        doc = fitz.open()
+        for i in range(4):
+            page = doc.new_page()
+            page.insert_text((72, 72), f"Content of chapter section {i + 1}.")
+        doc.set_metadata({"title": "Test Book", "author": "Server Author"})
+        toc_data = [[1, "First Chapter", 0], [1, "Second Chapter", 2]]
+        doc.set_toc(toc_data)
+        doc.save(str(pdf_path))
+        doc.close()
+
+        resp = client.post(
+            "/api/textbooks/add",
+            json={"filepath": str(pdf_path)},
+        )
+        assert resp.status_code == 200
+        return resp.json()["id"]
+
+    def test_list_chapters(self, client, db_home: str):
+        """GET /api/textbooks/documents/{id}/chapters returns chapter list."""
+        doc_id = self._index_textbook_with_chapters(client, db_home)
+
+        resp = client.get(f"/api/textbooks/documents/{doc_id}/chapters")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 2
+        assert data[0]["chapter_index"] == 0
+        assert data[0]["title"] == "First Chapter"
+        assert data[1]["title"] == "Second Chapter"
+
+    def test_list_chapters_inherits_metadata(self, client, db_home: str):
+        """Chapter metadata should inherit from parent textbook."""
+        doc_id = self._index_textbook_with_chapters(client, db_home)
+
+        resp = client.get(f"/api/textbooks/documents/{doc_id}/chapters")
+        assert resp.status_code == 200
+        data = resp.json()
+        # Parent author should be inherited
+        assert data[0]["metadata"]["author"] == "Server Author"
+
+    def test_get_chapter_content(self, client, db_home: str):
+        """GET /api/textbooks/documents/{id}/chapters/{index} returns chapter text."""
+        doc_id = self._index_textbook_with_chapters(client, db_home)
+
+        resp = client.get(f"/api/textbooks/documents/{doc_id}/chapters/0")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["chapter_index"] == 0
+        assert data["title"] == "First Chapter"
+        assert "Content of chapter section 1" in data["full_text"]
+
+    def test_get_missing_chapter_returns_404(self, client, db_home: str):
+        """Requesting nonexistent chapter index returns 404."""
+        doc_id = self._index_textbook_with_chapters(client, db_home)
+
+        resp = client.get(f"/api/textbooks/documents/{doc_id}/chapters/99")
+        assert resp.status_code == 404
+
+    def test_list_chapters_on_non_textbook_returns_400(self, client, db_home: str):
+        """Listing chapters on a non-textbook document returns 400."""
+        from pathlib import Path
+        home = Path(db_home)
+        md_path = home / "note.md"
+        md_path.write_text("# A note\nSome content here.")
+
+        resp = client.post(
+            "/api/index/add",
+            json={"filepath": str(md_path), "document_type": "generic"},
+        )
+        assert resp.status_code == 200
+        doc_id = resp.json()["id"]
+
+        resp = client.get(f"/api/textbooks/documents/{doc_id}/chapters")
+        assert resp.status_code == 400
+
+    def test_search_returns_separated_groups(self, client, db_home: str):
+        """Search response should have documents and chapters groups."""
+        resp = client.get("/api/search?q=test")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "documents" in data
+        assert "chapters" in data
+        assert "results" in data["documents"]
+        assert "results" in data["chapters"]
+        assert "total" in data["documents"]
+        assert "total" in data["chapters"]
+
+    def test_search_chapters_by_text(self, client, db_home: str):
+        """Search should find textbook chapters by full-text content."""
+        self._index_textbook_with_chapters(client, db_home)
+
+        resp = client.get("/api/search?q=chapter+section")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["chapters"]["results"]) >= 1
+        # Each result has chapter + parent_document
+        hit = data["chapters"]["results"][0]
+        assert "chapter" in hit
+        assert "parent_document" in hit
+        assert hit["parent_document"]["document_type"] == "textbook"

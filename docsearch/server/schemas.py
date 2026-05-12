@@ -99,3 +99,53 @@ class MetaPatch(BaseModel):
 
     key: str
     value: Any
+
+
+# ── Chapter schemas ────────────────────────────────────────────────
+
+class ChapterResponse(BaseModel):
+    """Metadata for a single textbook chapter (no full_text)."""
+    id: int
+    textbook_id: int
+    chapter_index: int
+    title: str
+    start_page: int
+    end_page: int
+    metadata: dict[str, Any] = {}
+
+
+class ChapterContentResponse(BaseModel):
+    """A textbook chapter with its extracted text."""
+    id: int
+    textbook_id: int
+    chapter_index: int
+    title: str
+    start_page: int
+    end_page: int
+    metadata: dict[str, Any] = {}
+    full_text: str
+
+
+class ChapterSearchResultResponse(BaseModel):
+    """A chapter-level search hit with parent textbook context."""
+    chapter: ChapterResponse
+    parent_document: DocumentResponse
+    score: float = 0.0
+
+
+class DocumentSearchGroup(BaseModel):
+    """Paginated group of document-level search results."""
+    results: list[SearchResultResponse]
+    total: int
+
+
+class ChapterSearchGroup(BaseModel):
+    """Paginated group of chapter-level search results."""
+    results: list[ChapterSearchResultResponse]
+    total: int
+
+
+class SearchResponse(BaseModel):
+    """Combined search response with separated result groups."""
+    documents: DocumentSearchGroup
+    chapters: ChapterSearchGroup

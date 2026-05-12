@@ -384,13 +384,184 @@ class PaperDocumentHandler(DocumentHandler):
 
 
 class TextbookDocumentHandler(DocumentHandler):
-    """Handler for textbooks.
+    """Handler for textbooks — splits into chapters, stores each independently.
 
-    Future: chunk into chapters/sections, store per-chapter metadata.
-    For now behaves identically to generic.
+    Pipeline:
+    1. Extract overall PDF metadata (title, author, etc.)
+    2. Upsert parent Document row (document_type="textbook", full_text = rendered TOC)
+    3. Detect chapter boundaries (sidecar override > PDF TOC > single-chapter fallback)
+    4. Delete any existing chapters for this textbook
+    5. For each chapter: extract text slice, upsert Chapter row
     """
 
     document_type = "textbook"
+
+    def handle(self, filepath: Path) -> Optional[Document]:
+        """Run the full textbook indexing pipeline."""
+        if not self._has_extractor(filepath):
+            return None
+
+        self.pre_process(filepath)
+
+        try:
+            stat = filepath.stat()
+            content_hash = self._compute_hash(filepath)
+
+            extracted_meta = self.extract_metadata(filepath)
+            sidecar_meta = self._load_sidecar(filepath)
+
+            # Merge user-supplied extra metadata into sidecar metadata
+            merged_sidecar = {**sidecar_meta, **self.extra_metadata}
+
+            # Detect chapters
+            chapters_info = self._detect_chapters(filepath, sidecar_meta)
+
+            # Build TOC string for the parent document's full_text
+            toc_lines = [extracted_meta.get("title", filepath.stem)]
+            for ch in chapters_info:
+                toc_lines.append(f"  Ch {ch['index'] + 1}: {ch['title']} (pp. {ch['start_page']}–{ch['end_page']})")
+            toc_text = "\n".join(toc_lines)
+
+            doc = Document(
+                path=str(filepath.resolve()),
+                filename=filepath.name,
+                directory=str(filepath.parent.resolve()),
+                extension=filepath.suffix.lower().lstrip("."),
+                document_type=self.document_type,
+                size=stat.st_size,
+                mtime=stat.st_mtime,
+                content_hash=content_hash,
+                extracted_metadata=extracted_meta,
+                sidecar_metadata=merged_sidecar,
+                full_text=toc_text,
+            )
+
+            doc = self.post_process(doc)
+            row_id = self.repo.upsert(doc)
+            doc.id = row_id
+
+            if doc.id is not None:
+                # Delete old chapters and insert fresh ones
+                self.repo.delete_chapters(doc.id)
+                self._insert_chapters(filepath, doc.id, chapters_info)
+
+            # Persist extra metadata to the sidecar file on disk
+            self._save_sidecar(filepath, merged_sidecar)
+
+            return doc
+        except Exception as e:
+            logger.error("Textbook handler failed on %s: %s", filepath, e)
+            return None
+
+    def _detect_chapters(
+        self, filepath: Path, sidecar_meta: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Detect chapter boundaries using sidecar override, PDF TOC, or fallback.
+
+        All page indices are 0-based; ``end_page`` is exclusive.
+        """
+        # 1. Sidecar override
+        if "chapters" in sidecar_meta and isinstance(sidecar_meta["chapters"], list):
+            chapters = []
+            for i, entry in enumerate(sidecar_meta["chapters"]):
+                chapters.append({
+                    "index": entry.get("index", i),
+                    "title": entry.get("title", f"Chapter {i + 1}"),
+                    "start_page": entry.get("start_page", 0),
+                    "end_page": entry.get("end_page"),
+                })
+            if chapters:
+                # Ensure last chapter extends to end of book
+                page_count = self._get_page_count(filepath)
+                if page_count and chapters[-1]["end_page"] is None:
+                    chapters[-1]["end_page"] = page_count
+                return chapters
+
+        # 2. PDF TOC via PyMuPDF (already 0-based)
+        toc_entries = self._parse_pdf_toc(filepath)
+        if toc_entries:
+            chapters = []
+            for i, entry in enumerate(toc_entries):
+                # end_page is exclusive — next chapter's start_page
+                end_page = toc_entries[i + 1]["start_page"] if i + 1 < len(toc_entries) else self._get_page_count(filepath)
+                chapters.append({
+                    "index": i,
+                    "title": entry["title"],
+                    "start_page": entry["start_page"],
+                    "end_page": end_page,
+                })
+            if chapters:
+                return chapters
+
+        # 3. Fallback: entire book as single chapter
+        page_count = self._get_page_count(filepath)
+        return [{
+            "index": 0,
+            "title": filepath.stem,
+            "start_page": 0,
+            "end_page": page_count or 0,
+        }]
+
+    def _parse_pdf_toc(self, filepath: Path) -> list[dict[str, Any]]:
+        """Parse PDF table of contents via PyMuPDF, returning top-level entries only."""
+        try:
+            import fitz
+            with fitz.open(str(filepath)) as doc:
+                toc = doc.get_toc()
+            # toc is list of [level, title, page, ...]
+            # Take only top-level (level 1) entries
+            entries = []
+            for entry in toc:
+                if entry[0] == 1:  # level 1 = top-level chapter
+                    entries.append({
+                        "title": entry[1],
+                        "start_page": entry[2]-1,
+                    })
+            return entries
+        except Exception as e:
+            logger.warning("Failed to parse TOC for %s: %s", filepath, e)
+            return []
+
+    def _get_page_count(self, filepath: Path) -> int:
+        """Get total page count of a PDF."""
+        try:
+            import fitz
+            with fitz.open(str(filepath)) as doc:
+                return len(doc)
+        except Exception:
+            return 0
+
+    def _extract_pages(self, filepath: Path, start_page: int, end_page: int) -> str:
+        """Extract text from a page range (0-based, end_page exclusive)."""
+        try:
+            import fitz
+            with fitz.open(str(filepath)) as doc:
+                pages = range(start_page, min(end_page, len(doc)))
+                return "\n\n".join(doc[i].get_text() for i in pages)
+        except Exception as e:
+            logger.warning("Failed to extract pages %d:%d from %s: %s", start_page, end_page, filepath, e)
+            return ""
+
+    def _insert_chapters(
+        self, filepath: Path, textbook_id: int, chapters_info: list[dict[str, Any]]
+    ) -> None:
+        """Extract text for each chapter and upsert into the database."""
+        from .models import Chapter
+
+        for ch_info in chapters_info:
+            full_text = self._extract_pages(
+                filepath, ch_info["start_page"], ch_info["end_page"]
+            )
+            chapter = Chapter(
+                textbook_id=textbook_id,
+                chapter_index=ch_info["index"],
+                title=ch_info["title"],
+                start_page=ch_info["start_page"],
+                end_page=ch_info["end_page"],
+                metadata={},
+                full_text=full_text,
+            )
+            self.repo.upsert_chapter(chapter)
 
 
 # ── registry ────────────────────────────────────────────────────

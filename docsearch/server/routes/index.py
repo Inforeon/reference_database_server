@@ -57,7 +57,13 @@ async def add_file(
         indexer = Indexer(repo)
         doc = indexer.add_file(body.filepath, document_type=body.document_type, extra_metadata=body.extra_metadata or None)
         if doc:
-            return {"path": doc.path, "filename": doc.filename, "document_type": doc.document_type}
+            indexed = repo.get(doc.path)
+            return {
+                "id": indexed.id if indexed else None,
+                "path": doc.path,
+                "filename": doc.filename,
+                "document_type": doc.document_type,
+            }
         return None
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))

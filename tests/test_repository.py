@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from docsearch.core.models import Document, SearchQuery, SearchResult
+from docsearch.core.models import Chapter, Document, SearchQuery, SearchResult
 from docsearch.core.repository import Repository
 
 
@@ -202,3 +202,183 @@ class TestRepository:
         repo.upsert(_make_doc("/a/2.md", full_text="beta"))
         results = repo.search(SearchQuery())
         assert len(results) == 2
+
+    def test_search_document_type_filter(self, repo: Repository):
+        repo.upsert(_make_doc("/a/1.md", document_type="generic", full_text="data"))
+        repo.upsert(_make_doc("/a/2.md", document_type="paper", full_text="data"))
+        results = repo.search(SearchQuery(document_types=["paper"]))
+        assert len(results) == 1
+        assert results[0].document.document_type == "paper"
+
+
+class TestChapterModel:
+    def test_combined_metadata_inherits_from_parent(self):
+        parent = Document(
+            path="/x/book.pdf",
+            extracted_metadata={"author": "Klein", "title": "Book"},
+            sidecar_metadata={"tags": ["physics"]},
+        )
+        chapter = Chapter(
+            textbook_id=1,
+            chapter_index=0,
+            title="Ch 1",
+            metadata={"subtitle": "Intro"},
+        )
+        combined = chapter.combined_metadata(parent)
+        assert combined["author"] == "Klein"
+        assert combined["title"] == "Book"
+        assert combined["tags"] == ["physics"]
+        assert combined["subtitle"] == "Intro"
+
+    def test_combined_metadata_without_parent(self):
+        chapter = Chapter(
+            textbook_id=1,
+            chapter_index=0,
+            metadata={"key": "val"},
+        )
+        combined = chapter.combined_metadata()
+        assert combined == {"key": "val"}
+
+    def test_combined_metadata_chapter_overrides_parent(self):
+        parent = Document(
+            extracted_metadata={"title": "Parent Title"},
+        )
+        chapter = Chapter(
+            textbook_id=1,
+            chapter_index=0,
+            metadata={"title": "Chapter Title"},
+        )
+        combined = chapter.combined_metadata(parent)
+        assert combined["title"] == "Chapter Title"
+
+    def test_from_row_dict(self):
+        row = {
+            "id": 1,
+            "textbook_id": 5,
+            "chapter_index": 2,
+            "title": "Quantum Mechanics",
+            "start_page": 100,
+            "end_page": 150,
+            "metadata": '{"topic": "quantum"}',
+            "full_text": "some chapter text",
+        }
+        ch = Chapter.from_row(row)
+        assert ch.id == 1
+        assert ch.textbook_id == 5
+        assert ch.chapter_index == 2
+        assert ch.title == "Quantum Mechanics"
+        assert ch.start_page == 100
+        assert ch.end_page == 150
+        assert ch.metadata == {"topic": "quantum"}
+        assert ch.full_text == "some chapter text"
+
+
+class TestChapterRepository:
+    def _make_textbook(self, repo: Repository, **kwargs) -> Document:
+        defaults = dict(
+            path="/tmp/textbook.pdf",
+            filename="textbook.pdf",
+            directory="/tmp",
+            extension="pdf",
+            document_type="textbook",
+            size=5000,
+            mtime=1700000000.0,
+            content_hash="xyz",
+            extracted_metadata={"author": "Klein", "title": "Test Book"},
+            sidecar_metadata={},
+            full_text="TOC",
+        )
+        defaults.update(kwargs)
+        doc = Document(**defaults)
+        repo.upsert(doc)
+        return repo.get(doc.path)
+
+    def test_upsert_and_get_chapters(self, repo: Repository):
+        tb = self._make_textbook(repo)
+        repo.upsert_chapter(Chapter(textbook_id=tb.id, chapter_index=0, title="Ch 1", start_page=1, end_page=10, full_text="first chapter"))
+        repo.upsert_chapter(Chapter(textbook_id=tb.id, chapter_index=1, title="Ch 2", start_page=11, end_page=20, full_text="second chapter"))
+
+        chapters = repo.get_chapters(tb.id)
+        assert len(chapters) == 2
+        assert chapters[0].title == "Ch 1"
+        assert chapters[1].title == "Ch 2"
+
+    def test_get_chapter_by_index(self, repo: Repository):
+        tb = self._make_textbook(repo)
+        repo.upsert_chapter(Chapter(textbook_id=tb.id, chapter_index=0, title="Intro", full_text="intro text"))
+        repo.upsert_chapter(Chapter(textbook_id=tb.id, chapter_index=1, title="Core", full_text="core text"))
+
+        ch = repo.get_chapter(tb.id, 1)
+        assert ch is not None
+        assert ch.title == "Core"
+        assert ch.full_text == "core text"
+
+    def test_get_missing_chapter_returns_none(self, repo: Repository):
+        tb = self._make_textbook(repo)
+        assert repo.get_chapter(tb.id, 99) is None
+
+    def test_delete_chapters(self, repo: Repository):
+        tb = self._make_textbook(repo)
+        repo.upsert_chapter(Chapter(textbook_id=tb.id, chapter_index=0, title="A", full_text="a"))
+        repo.upsert_chapter(Chapter(textbook_id=tb.id, chapter_index=1, title="B", full_text="b"))
+        assert len(repo.get_chapters(tb.id)) == 2
+
+        deleted = repo.delete_chapters(tb.id)
+        assert deleted == 2
+        assert len(repo.get_chapters(tb.id)) == 0
+
+    def test_upsert_chapter_updates_existing(self, repo: Repository):
+        tb = self._make_textbook(repo)
+        repo.upsert_chapter(Chapter(textbook_id=tb.id, chapter_index=0, title="Old", full_text="old text"))
+        repo.upsert_chapter(Chapter(textbook_id=tb.id, chapter_index=0, title="New", full_text="new text"))
+
+        chapters = repo.get_chapters(tb.id)
+        assert len(chapters) == 1
+        assert chapters[0].title == "New"
+
+    def test_search_chapters_fts(self, repo: Repository):
+        tb = self._make_textbook(repo)
+        repo.upsert_chapter(Chapter(textbook_id=tb.id, chapter_index=0, title="Thermodynamics", full_text="entropy and free energy"))
+        repo.upsert_chapter(Chapter(textbook_id=tb.id, chapter_index=1, title="Electromagnetism", full_text="magnetic fields and induction"))
+
+        results = repo.search_textbook_chapters(SearchQuery(q="entropy"))
+        assert len(results) == 1
+        assert results[0].chapter.title == "Thermodynamics"
+        assert results[0].document.extracted_metadata["author"] == "Klein"
+
+    def test_search_chapters_by_title(self, repo: Repository):
+        tb = self._make_textbook(repo)
+        repo.upsert_chapter(Chapter(textbook_id=tb.id, chapter_index=0, title="Quantum Mechanics", full_text="wave functions"))
+        results = repo.search_textbook_chapters(SearchQuery(q="Quantum"))
+        assert len(results) == 1
+
+    def test_search_chapters_resolves_textbook_ids(self, repo: Repository):
+        # Two textbooks, only one matches author filter
+        tb1 = self._make_textbook(repo, extracted_metadata={"author": "Klein"})
+        tb2_data = Document(
+            path="/tmp/other.pdf",
+            filename="other.pdf",
+            directory="/tmp",
+            extension="pdf",
+            document_type="textbook",
+            extracted_metadata={"author": "Griffiths"},
+        )
+        repo.upsert(tb2_data)
+        tb2 = repo.get(tb2_data.path)
+
+        repo.upsert_chapter(Chapter(textbook_id=tb1.id, chapter_index=0, title="Ch1", full_text="physics content"))
+        repo.upsert_chapter(Chapter(textbook_id=tb2.id, chapter_index=0, title="Ch1", full_text="physics content"))
+
+        results = repo.search_textbook_chapters(SearchQuery(q="physics", author="Klein"))
+        assert len(results) == 1
+        assert results[0].document.extracted_metadata["author"] == "Klein"
+
+    def test_search_chapters_no_match_returns_empty(self, repo: Repository):
+        results = repo.search_textbook_chapters(SearchQuery(q="nothing"))
+        assert len(results) == 0
+
+    def test_cascade_delete_on_document_remove(self, repo: Repository):
+        tb = self._make_textbook(repo)
+        repo.upsert_chapter(Chapter(textbook_id=tb.id, chapter_index=0, title="A", full_text="a"))
+        repo.remove(tb.path)
+        assert len(repo.get_chapters(tb.id)) == 0

@@ -10,7 +10,12 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from docsearch.core.indexer import Indexer
 from docsearch.core.repository import Repository
 from docsearch.server.dependencies import get_config
-from docsearch.server.schemas import AddTextbookRequest, TextbookUploadResponse
+from docsearch.server.schemas import (
+    AddTextbookRequest,
+    ChapterContentResponse,
+    ChapterResponse,
+    TextbookUploadResponse,
+)
 
 router = APIRouter(prefix="/api/textbooks", tags=["textbooks"])
 
@@ -97,6 +102,70 @@ async def upload_textbook(
             id=indexed.id,
             path=indexed.path,
             filename=indexed.filename,
+        )
+    finally:
+        repo.close()
+
+
+@router.get("/documents/{doc_id}/chapters", response_model=list[ChapterResponse])
+async def list_chapters(
+    doc_id: int,
+    config = Depends(get_config),
+) -> list[ChapterResponse]:
+    """List all chapters for a textbook. Returns 400 if not a textbook."""
+    repo = Repository(str(config.db_path))
+    try:
+        doc = repo.get_by_id(doc_id)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found.")
+        if doc.document_type != "textbook":
+            raise HTTPException(status_code=400, detail="Document is not a textbook.")
+
+        chapters = repo.get_chapters(doc_id)
+        return [
+            ChapterResponse(
+                id=ch.id,
+                textbook_id=ch.textbook_id,
+                chapter_index=ch.chapter_index,
+                title=ch.title,
+                start_page=ch.start_page,
+                end_page=ch.end_page,
+                metadata=ch.combined_metadata(doc),
+            )
+            for ch in chapters
+        ]
+    finally:
+        repo.close()
+
+
+@router.get("/documents/{doc_id}/chapters/{chapter_index}", response_model=ChapterContentResponse)
+async def get_chapter(
+    doc_id: int,
+    chapter_index: int,
+    config = Depends(get_config),
+) -> ChapterContentResponse:
+    """Get a specific chapter by index. Returns 400 if not a textbook, 404 if chapter missing."""
+    repo = Repository(str(config.db_path))
+    try:
+        doc = repo.get_by_id(doc_id)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found.")
+        if doc.document_type != "textbook":
+            raise HTTPException(status_code=400, detail="Document is not a textbook.")
+
+        chapter = repo.get_chapter(doc_id, chapter_index)
+        if not chapter:
+            raise HTTPException(status_code=404, detail=f"Chapter {chapter_index} not found.")
+
+        return ChapterContentResponse(
+            id=chapter.id,
+            textbook_id=chapter.textbook_id,
+            chapter_index=chapter.chapter_index,
+            title=chapter.title,
+            start_page=chapter.start_page,
+            end_page=chapter.end_page,
+            metadata=chapter.combined_metadata(doc),
+            full_text=chapter.full_text,
         )
     finally:
         repo.close()

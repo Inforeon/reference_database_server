@@ -443,3 +443,172 @@ class TestTitleMismatchLogic:
         assert authors[0]["family"] == "Smith"
         assert authors[1]["family"] == "Jones"
         repo.close()
+
+
+class TestTextbookHandler:
+    """Tests for TextbookDocumentHandler pipeline."""
+
+    def _make_textbook_pdf(self, tmp_path: Path, toc_entries: list[tuple[int, str, int]] | None = None):
+        """Create a multi-page PDF with optional TOC outline entries.
+
+        ``toc_entries`` should be ``(level, title, page)`` tuples where ``page``
+        is a **0-based** page index (as PyMuPDF expects).
+        """
+        return self._make_textbook_pdf_with_name(tmp_path, "textbook.pdf", toc_entries)
+
+    def _make_textbook_pdf_with_name(self, tmp_path: Path, name: str, toc_entries: list[tuple[int, str, int]] | None = None):
+        """Create a multi-page PDF with a custom filename and optional TOC."""
+        import fitz
+        path = tmp_path / name
+        doc = fitz.open()
+        for i in range(6):
+            page = doc.new_page()
+            page.insert_text((72, 72), f"This is page {i} of the textbook.")
+        doc.set_metadata({"title": "Test Textbook", "author": "Test Author"})
+        if toc_entries:
+            # PyMuPDF's set_toc expects [[level, title, page, ...], ...] with 1-based pages
+            toc_data = [[level, title, page + 1] for level, title, page in toc_entries]
+            doc.set_toc(toc_data)
+        doc.save(str(path))
+        doc.close()
+        return path
+
+    def test_fallback_single_chapter_no_toc(self, tmp_path: Path):
+        """Without TOC and without sidecar, entire book becomes one chapter."""
+        from docsearch.core.handlers import TextbookDocumentHandler
+        from docsearch.core.repository import Repository
+
+        pdf_path = self._make_textbook_pdf(tmp_path)
+        db_path = tmp_path / "test.db"
+        repo = Repository(str(db_path))
+        handler = TextbookDocumentHandler(repo)
+
+        chapters = handler._detect_chapters(pdf_path, {})
+        assert len(chapters) == 1
+        assert chapters[0]["index"] == 0
+        assert chapters[0]["start_page"] == 0
+        assert chapters[0]["end_page"] == 6
+        repo.close()
+
+    def test_chapter_detection_from_pdf_toc(self, tmp_path: Path):
+        """TOC entries should produce multiple chapters (0-based, exclusive end)."""
+        from docsearch.core.handlers import TextbookDocumentHandler
+        from docsearch.core.repository import Repository
+
+        # set_toc uses 0-based page indices; pages are 0,2,4 in a 6-page doc
+        toc = [(1, "Introduction", 0), (1, "Core Concepts", 2), (1, "Advanced Topics", 4)]
+        pdf_path = self._make_textbook_pdf(tmp_path, toc)
+        db_path = tmp_path / "test.db"
+        repo = Repository(str(db_path))
+        handler = TextbookDocumentHandler(repo)
+
+        chapters = handler._detect_chapters(pdf_path, {})
+        assert len(chapters) == 3
+        assert chapters[0]["title"] == "Introduction"
+        assert chapters[0]["start_page"] == 0
+        assert chapters[0]["end_page"] == 2
+        assert chapters[1]["title"] == "Core Concepts"
+        assert chapters[1]["start_page"] == 2
+        assert chapters[1]["end_page"] == 4
+        assert chapters[2]["title"] == "Advanced Topics"
+        assert chapters[2]["start_page"] == 4
+        assert chapters[2]["end_page"] == 6  # last chapter extends to end of book
+        repo.close()
+
+    def test_sidecar_override_wins_over_toc(self, tmp_path: Path):
+        """Sidecar chapter spec should override PDF TOC."""
+        from docsearch.core.handlers import TextbookDocumentHandler
+        from docsearch.core.repository import Repository
+
+        toc = [(1, "Toc Chapter", 0)]
+        pdf_path = self._make_textbook_pdf(tmp_path, toc)
+        db_path = tmp_path / "test.db"
+        repo = Repository(str(db_path))
+        handler = TextbookDocumentHandler(repo)
+
+        sidecar = {
+            "chapters": [
+                {"index": 0, "title": "Custom Ch 1", "start_page": 0, "end_page": 3},
+                {"index": 1, "title": "Custom Ch 2", "start_page": 3, "end_page": 6},
+            ]
+        }
+        chapters = handler._detect_chapters(pdf_path, sidecar)
+        assert len(chapters) == 2
+        assert chapters[0]["title"] == "Custom Ch 1"
+        assert chapters[0]["start_page"] == 0
+        assert chapters[0]["end_page"] == 3
+        assert chapters[1]["title"] == "Custom Ch 2"
+        assert chapters[1]["start_page"] == 3
+        assert chapters[1]["end_page"] == 6
+        repo.close()
+
+    def test_full_handle_creates_parent_and_chapters(self, tmp_path: Path):
+        """End-to-end: handle() creates parent Document + chapter rows."""
+        from docsearch.core.handlers import TextbookDocumentHandler
+        from docsearch.core.repository import Repository
+
+        toc = [(1, "Chapter One", 0), (1, "Chapter Two", 3)]
+        pdf_path = self._make_textbook_pdf(tmp_path, toc)
+        db_path = tmp_path / "test.db"
+        repo = Repository(str(db_path))
+        handler = TextbookDocumentHandler(repo)
+
+        doc = handler.handle(pdf_path)
+        assert doc is not None
+        assert doc.document_type == "textbook"
+        assert doc.id is not None
+        assert "Test Textbook" in doc.full_text  # TOC text
+
+        chapters = repo.get_chapters(doc.id)
+        assert len(chapters) == 2
+        assert chapters[0].title == "Chapter One"
+        assert chapters[0].full_text != ""
+        assert "page 1" in chapters[0].full_text.lower() or "page 1" in chapters[0].full_text
+        repo.close()
+
+    def test_reindex_deletes_old_chapters(self, tmp_path: Path):
+        """Re-indexing the same file should replace old chapters."""
+        from docsearch.core.handlers import TextbookDocumentHandler
+        from docsearch.core.repository import Repository
+
+        pdf_path = self._make_textbook_pdf(tmp_path)
+        db_path = tmp_path / "test.db"
+        repo = Repository(str(db_path))
+
+        # First index — single chapter fallback
+        handler1 = TextbookDocumentHandler(repo)
+        doc1 = handler1.handle(pdf_path)
+        assert len(repo.get_chapters(doc1.id)) == 1
+
+        # Second index with different TOC — should replace
+        toc = [(1, "New A", 0), (1, "New B", 3)]
+        pdf_path2 = self._make_textbook_pdf_with_name(tmp_path, "textbook_v2.pdf", toc)
+        # Overwrite original path with new version
+        import shutil
+        shutil.copy(str(pdf_path2), str(pdf_path))
+
+        handler2 = TextbookDocumentHandler(repo)
+        doc2 = handler2.handle(pdf_path)
+        chapters = repo.get_chapters(doc2.id)
+        assert len(chapters) == 2
+        assert chapters[0].title == "New A"
+        repo.close()
+
+    def test_metadata_inheritance_in_chapters(self, tmp_path: Path):
+        """Chapter combined_metadata should inherit from parent textbook."""
+        from docsearch.core.handlers import TextbookDocumentHandler
+        from docsearch.core.repository import Repository
+
+        pdf_path = self._make_textbook_pdf(tmp_path)
+        db_path = tmp_path / "test.db"
+        repo = Repository(str(db_path))
+        handler = TextbookDocumentHandler(repo)
+
+        doc = handler.handle(pdf_path)
+        chapters = repo.get_chapters(doc.id)
+        ch = chapters[0]
+
+        combined = ch.combined_metadata(doc)
+        assert combined["author"] == "Test Author"
+        assert combined["title"] == "Test Textbook"
+        repo.close()

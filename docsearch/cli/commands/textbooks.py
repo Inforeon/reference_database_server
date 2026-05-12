@@ -88,6 +88,65 @@ def upload(ctx: dict, file, name: str | None, directory: str, meta_pairs: tuple[
 
 # ── helpers ────────────────────────────────────────────────────────
 
+@textbooks.command(name="chapters")
+@click.argument("filepath", type=click.Path(exists=True, dir_okay=False))
+@click.pass_obj
+def chapters(ctx: dict, filepath: str) -> None:
+    """List all indexed chapters for a textbook."""
+    config = ctx["config"]
+    repo = Repository(str(config.db_path))
+    try:
+        doc = repo.get(filepath)
+        if not doc:
+            click.echo(f"Not indexed: {filepath}", err=True)
+            return
+        if doc.document_type != "textbook":
+            click.echo(f"Not a textbook: {filepath} (type={doc.document_type})", err=True)
+            return
+
+        chapter_list = repo.get_chapters(doc.id)
+        if not chapter_list:
+            click.echo("No chapters found.")
+            return
+
+        click.echo(f"\n{'Index':<7} {'Title':<40} {'Pages':<15}")
+        click.echo("-" * 62)
+        for ch in chapter_list:
+            pages = f"{ch.start_page}–{ch.end_page}"
+            click.echo(f"{ch.chapter_index:<7} {ch.title:<40} {pages:<15}")
+        click.echo()
+    finally:
+        repo.close()
+
+
+@textbooks.command(name="chapter")
+@click.argument("filepath", type=click.Path(exists=True, dir_okay=False))
+@click.option("--index", "-i", required=True, type=int, help="Chapter index (zero-based).")
+@click.pass_obj
+def chapter(ctx: dict, filepath: str, index: int) -> None:
+    """Print the full text of a specific chapter."""
+    config = ctx["config"]
+    repo = Repository(str(config.db_path))
+    try:
+        doc = repo.get(filepath)
+        if not doc:
+            click.echo(f"Not indexed: {filepath}", err=True)
+            return
+        if doc.document_type != "textbook":
+            click.echo(f"Not a textbook: {filepath} (type={doc.document_type})", err=True)
+            return
+
+        ch = repo.get_chapter(doc.id, index)
+        if not ch:
+            click.echo(f"Chapter {index} not found.", err=True)
+            return
+
+        click.echo(f"Chapter {ch.chapter_index}: {ch.title} (pp. {ch.start_page}–{ch.end_page})\n")
+        click.echo(ch.full_text)
+    finally:
+        repo.close()
+
+
 def _parse_meta_pairs(pairs: tuple[str, ...]) -> dict:
     """Parse ``-m KEY=VALUE`` pairs into a dict."""
     meta: dict = {}
