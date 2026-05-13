@@ -39,6 +39,7 @@ async def get_document(
             directory=doc.directory,
             extension=doc.extension,
             document_type=doc.document_type,
+            source_type=doc.source_type,
             size=doc.size,
             mtime=doc.mtime,
             metadata=doc.combined_metadata,

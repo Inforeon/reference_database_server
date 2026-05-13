@@ -245,10 +245,10 @@ async def upload_chapter(
                 status_code=400,
                 detail=f"Cannot upload chapter: document {doc.filename!r} is type '{doc.document_type}', not 'textbook'.",
             )
-        if doc.textbook_variant != "directory":
+        if doc.source_type != "directory":
             raise HTTPException(
                 status_code=400,
-                detail=f"Cannot upload chapter: textbook {doc.filename!r} is variant '{doc.textbook_variant}', not 'directory'. "
+                detail=f"Cannot upload chapter: textbook {doc.filename!r} is variant '{doc.source_type}', not 'directory'. "
                        "Chapter uploads are only supported for directory-type textbooks.",
             )
 

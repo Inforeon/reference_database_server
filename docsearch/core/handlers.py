@@ -386,14 +386,14 @@ class PaperDocumentHandler(DocumentHandler):
 class TextbookDocumentHandler(DocumentHandler):
     """Handler for textbooks — supports file-type (single PDF) and directory-type (chapter-per-file).
 
-    **File-type** (single PDF, ``textbook_variant='file'``):
+    **File-type** (single PDF, ``source_type='file'``):
     1. Extract overall PDF metadata (title, author, etc.)
     2. Upsert parent Document row (document_type="textbook", full_text = rendered TOC)
     3. Detect chapter boundaries (sidecar override > PDF TOC > single-chapter fallback)
     4. Delete any existing chapters for this textbook
     5. For each chapter: extract text slice, upsert Chapter row
 
-    **Directory-type** (chapters as separate files, ``textbook_variant='directory'``):
+    **Directory-type** (chapters as separate files, ``source_type='directory'``):
     1. Load sidecar from ``<dirname>.meta.json`` inside the directory
     2. Enumerate first-level files as chapters (alphabetical default order, overridable via sidecar)
     3. Upsert parent Document row with TOC as full_text
@@ -442,7 +442,7 @@ class TextbookDocumentHandler(DocumentHandler):
                 directory=str(filepath.parent.resolve()),
                 extension=filepath.suffix.lower().lstrip("."),
                 document_type=self.document_type,
-                textbook_variant="file",
+                source_type="file",
                 size=stat.st_size,
                 mtime=stat.st_mtime,
                 content_hash=content_hash,
@@ -490,7 +490,7 @@ class TextbookDocumentHandler(DocumentHandler):
                 directory=str(dirpath.parent.resolve()),
                 extension="",
                 document_type=self.document_type,
-                textbook_variant="directory",
+                source_type="directory",
                 size=dir_stat.st_size,
                 mtime=dir_stat.st_mtime,
                 content_hash="",
@@ -754,10 +754,94 @@ class TextbookDocumentHandler(DocumentHandler):
 
 # ── registry ────────────────────────────────────────────────────
 
+class ReferenceDocumentHandler(DocumentHandler):
+    """Handler for reference entries — metadata-only documents without an associated file.
+
+    Creates a Document row with ``source_type='reference'`` containing only
+    user-supplied metadata (e.g. BibTeX citation, title, authors). No file
+    extraction is performed. The ``path`` is a synthetic URI to ensure
+    uniqueness in the index.
+    """
+
+    document_type = "paper"
+
+    def handle(self, filepath: Path) -> Optional[Document]:
+        """Create a reference document from extra_metadata alone.
+
+        The ``filepath`` argument is unused; all data comes from
+        ``self.extra_metadata``. A synthetic path is generated from the
+        citation key or title to guarantee uniqueness.
+        """
+        try:
+            # Build metadata from extras
+            merged_sidecar = dict(self.extra_metadata)
+
+            # Generate bibtex if not provided
+            if not merged_sidecar.get("bibtex"):
+                bibtex = _generate_bibtex_from_metadata(merged_sidecar)
+                merged_sidecar["bibtex"] = bibtex
+
+            # Derive citation key for synthetic path
+            title = merged_sidecar.get("title", "untitled")
+            year = str(merged_sidecar.get("year", "0000"))
+            author = merged_sidecar.get("author", merged_sidecar.get("authors_bib", "unknown"))
+            if isinstance(author, list):
+                # Use first author family name
+                if isinstance(author[0], dict):
+                    author = str(author[0].get("family", "unknown"))
+                else:
+                    author = str(author[0])
+            else:
+                author = str(author)
+
+            citation_key = merged_sidecar.get("citation_key", f"{author}{year}")
+            # Sanitize for use as path component
+            safe_key = re.sub(r"[^a-zA-Z0-9_-]", "_", citation_key)
+            synthetic_path = f"ref://{safe_key}"
+
+            # Build searchable full_text from metadata fields
+            searchable_parts = []
+            if merged_sidecar.get("title"):
+                searchable_parts.append(merged_sidecar["title"])
+            if merged_sidecar.get("author"):
+                searchable_parts.append(str(merged_sidecar["author"]))
+            if merged_sidecar.get("journal"):
+                searchable_parts.append(merged_sidecar["journal"])
+            if merged_sidecar.get("booktitle"):
+                searchable_parts.append(merged_sidecar["booktitle"])
+            if merged_sidecar.get("abstract"):
+                searchable_parts.append(merged_sidecar["abstract"])
+            full_text = " ".join(searchable_parts)
+
+            doc = Document(
+                path=synthetic_path,
+                filename=f"{safe_key}.bib",
+                directory="",
+                extension="bib",
+                document_type=self.document_type,
+                source_type="reference",
+                size=0,
+                mtime=0.0,
+                content_hash="",
+                extracted_metadata={},
+                sidecar_metadata=merged_sidecar,
+                full_text=full_text,
+            )
+
+            doc = self.post_process(doc)
+            self.repo.upsert(doc)
+
+            return doc
+        except Exception as e:
+            logger.error("Reference handler failed: %s", e)
+            return None
+
+
 _HANDLER_MAP: dict[str, type[DocumentHandler]] = {
     "generic": GenericDocumentHandler,
     "paper": PaperDocumentHandler,
     "textbook": TextbookDocumentHandler,
+    "reference": ReferenceDocumentHandler,
 }
 
 

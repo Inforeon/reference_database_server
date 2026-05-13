@@ -6,7 +6,7 @@ Document metadata index and search engine for managing reference material (resea
 
 - **Multi-format extraction** — PDF (PyMuPDF), DOCX (python-docx), Markdown/Text (PyYAML frontmatter)
 - **Full-text search** — SQLite FTS5 with filters on scope, file type, author, tags, date range, and document type
-- **Document types** — First-class support for generic documents, research papers (with BibTeX generation via pdf2bib), and textbooks (with chapter-level indexing)
+- **Document types** — First-class support for generic documents, research papers (with BibTeX generation via pdf2bib), textbooks (with chapter-level indexing), and references (metadata-only entries without associated files)
 - **Sidecar metadata** — Editable `<file>.meta.json` files for tagging and annotation without modifying source files
 - **Two interfaces** — Click-based CLI for local workflows, FastAPI REST API for remote access
 - **Content change detection** — SHA-256 hashing avoids unnecessary re-indexing
@@ -74,6 +74,17 @@ All data lives under the database home: the SQLite database at `{home}/docsearch
 | `generic` | Standard extract-and-index (default) |
 | `paper` | Research papers with pdf2bib bibliographic extraction, DOI embedding, title validation, and BibTeX export |
 | `textbook` | Textbooks split into chapters via TOC detection, each chapter indexed independently |
+| `reference` | Metadata-only paper entries without an associated file (BibTeX auto-generated) |
+
+## Source Types
+
+Documents have a `source_type` indicating how they originate:
+
+| Source Type | Applies To | Description |
+|---|---|---|
+| `file` | All types | Document backed by a file on disk (default) |
+| `directory` | Textbooks only | Directory-based textbook with one file per chapter |
+| `reference` | Papers only | Metadata-only entry with no associated file |
 
 ## Supported File Formats
 
@@ -183,13 +194,13 @@ All routes prefixed with `/api`.
 
 ### Documents
 
-All document operations (metadata, content, file download, sidecar, BibTeX, move) apply to any document type — generic, paper, or textbook.
+All document operations (metadata, content, file download, sidecar, BibTeX, move) apply to any document type — generic, paper, textbook, or reference.
 
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/documents/{id}` | Get document metadata |
 | `GET` | `/documents/{id}/content` | Get extracted text (`{id, path, filename, content}`) |
-| `GET` | `/documents/{id}/file` | Download original file (binary `FileResponse`) |
+| `GET` | `/documents/{id}/file` | Download original file (binary `FileResponse`; 404 for references) |
 | `GET` | `/documents/{id}/meta` | Get sidecar metadata |
 | `PATCH` | `/documents/{id}/meta` | Update sidecar key body: `{key, value}` → `{updated, key}` |
 | `GET` | `/documents/{id}/bibtex` | Export BibTeX (papers only, 400 if not paper) |
@@ -205,6 +216,7 @@ Paper-specific endpoints nested under `/documents`.
 |---|---|---|
 | `POST` | `/documents/papers/add` | Add paper body: `{filepath, doi, skip_bib, extra_metadata}` → `{id, path, filename}` |
 | `POST` | `/documents/papers/upload` | Upload paper (multipart, query: `doi`, `skip_bib`, `extra_metadata`, `directory`, `filename`) → `{id, path, filename}` |
+| `POST` | `/documents/papers/reference` | Register metadata-only reference body: `{title, author, year, journal, booktitle, doi, url, bibtex, citation_key, extra_metadata}` → `{id, path, filename}` |
 
 ### Textbooks
 
@@ -213,7 +225,8 @@ Textbook-specific endpoints nested under `/documents`.
 | Method | Endpoint | Description |
 |---|---|---|
 | `POST` | `/documents/textbooks/add` | Add textbook body: `{filepath, extra_metadata}` → `{id, path, filename}` |
-| `POST` | `/documents/textbooks/upload` | Upload textbook (multipart, query: `extra_metadata`, `directory`, `filename`) → `{id, path, filename}` |
+| `POST` | `/documents/textbooks/upload` | Upload textbook (multipart, query: `extra_metadata`, `directory`, `filename`, `variant`) → `{id, path, filename}` |
+| `POST` | `/documents/{id}/chapters/upload` | Upload chapter file to directory-type textbook (multipart, query: `filename`, `chapter_index`) → chapter metadata |
 
 ## Architecture
 
@@ -224,7 +237,7 @@ docsearch/
 │   ├── models.py    — Document, Chapter, SearchResult, SearchQuery
 │   ├── repository.py — SQLite + FTS5 repository
 │   ├── indexer.py   — Directory scanning, file add/remove
-│   └── handlers.py  — DocumentHandler pipeline (generic, paper, textbook)
+│   └── handlers.py  — DocumentHandler pipeline (generic, paper, textbook, reference)
 ├── extractors/      — Pluggable file-type extractors (PDF, DOCX, Markdown)
 ├── cli/             — Click-based CLI commands
 └── server/          — FastAPI REST API

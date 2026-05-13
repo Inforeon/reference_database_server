@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from docsearch.core.indexer import Indexer
 from docsearch.core.repository import Repository
 from docsearch.server.dependencies import get_config
-from docsearch.server.schemas import AddPaperRequest, PaperUploadResponse
+from docsearch.server.schemas import AddPaperRequest, AddReferenceRequest, PaperUploadResponse
 
 router = APIRouter(prefix="/api/documents/papers", tags=["papers"])
 
@@ -107,6 +107,56 @@ async def upload_paper(
         )
         if not doc:
             raise HTTPException(status_code=500, detail="Failed to index uploaded paper.")
+        indexed = repo.get(doc.path)
+        return PaperUploadResponse(
+            id=indexed.id,
+            path=indexed.path,
+            filename=indexed.filename,
+        )
+    finally:
+        repo.close()
+
+
+@router.post("/reference", response_model=PaperUploadResponse)
+async def add_reference(
+    body: AddReferenceRequest,
+    config = Depends(get_config),
+) -> PaperUploadResponse:
+    """Register a reference entry (metadata-only, no associated file).
+
+    Creates a paper-type document with ``source_type='reference'`` containing
+    only the supplied metadata. BibTeX is auto-generated if not provided.
+    """
+    meta: dict[str, Any] = dict(body.extra_metadata or {})
+    if body.title:
+        meta["title"] = body.title
+    if body.author:
+        meta["author"] = body.author
+    if body.year:
+        meta["year"] = body.year
+    if body.journal:
+        meta["journal"] = body.journal
+    if body.booktitle:
+        meta["booktitle"] = body.booktitle
+    if body.doi:
+        meta["doi"] = body.doi
+    if body.url:
+        meta["url"] = body.url
+    if body.bibtex:
+        meta["bibtex"] = body.bibtex
+    if body.citation_key:
+        meta["citation_key"] = body.citation_key
+
+    repo = Repository(str(config.db_path))
+    try:
+        indexer = Indexer(repo)
+        doc = indexer.add_file(
+            "",  # filepath ignored for references
+            document_type="reference",
+            extra_metadata=meta or None,
+        )
+        if not doc:
+            raise HTTPException(status_code=500, detail="Failed to create reference.")
         indexed = repo.get(doc.path)
         return PaperUploadResponse(
             id=indexed.id,

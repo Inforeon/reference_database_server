@@ -873,3 +873,186 @@ class TestDirectoryTextbookEndpoints:
         )
         assert resp.status_code == 200
         return resp.json()["id"]
+
+
+class TestReferenceEndpoints:
+    """Tests for reference (metadata-only) document entries."""
+
+    def test_add_reference_basic(self, client, db_home: str):
+        """POST /api/documents/papers/reference creates a metadata-only paper."""
+        resp = client.post(
+            "/api/documents/papers/reference",
+            json={
+                "title": "Attention Is All You Need",
+                "author": "Vaswani et al.",
+                "year": "2017",
+                "journal": "NeurIPS",
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["id"] is not None
+        assert data["filename"].endswith(".bib")
+
+        # Verify it's stored as a reference-type paper
+        doc_resp = client.get(f"/api/documents/{data['id']}")
+        assert doc_resp.status_code == 200
+        doc_data = doc_resp.json()
+        assert doc_data["document_type"] == "paper"
+        assert doc_data["source_type"] == "reference"
+
+    def test_add_reference_with_doi(self, client, db_home: str):
+        """Reference with DOI stores it in metadata."""
+        resp = client.post(
+            "/api/documents/papers/reference",
+            json={
+                "title": "BERT Paper",
+                "doi": "10.48550/arXiv.1810.04805",
+                "year": "2019",
+            },
+        )
+        assert resp.status_code == 200
+
+        doc_id = resp.json()["id"]
+        meta_resp = client.get(f"/api/documents/{doc_id}/meta")
+        assert meta_resp.status_code == 200
+        assert meta_resp.json()["doi"] == "10.48550/arXiv.1810.04805"
+
+    def test_add_reference_generates_bibtex(self, client, db_home: str):
+        """Reference without bibtex field auto-generates one."""
+        resp = client.post(
+            "/api/documents/papers/reference",
+            json={"title": "A Simple Paper", "author": "Smith", "year": "2024"},
+        )
+        assert resp.status_code == 200
+
+        doc_id = resp.json()["id"]
+        bib_resp = client.get(f"/api/documents/{doc_id}/bibtex")
+        assert bib_resp.status_code == 200
+        bib_data = bib_resp.json()
+        assert "@" in bib_data["bibtex"]
+        assert "A Simple Paper" in bib_data["bibtex"]
+
+    def test_add_reference_with_existing_bibtex(self, client, db_home: str):
+        """Reference with explicit bibtex preserves it."""
+        raw_bibtex = "@article{test2024,\n  title = {Test},\n  year = {2024},\n}"
+        resp = client.post(
+            "/api/documents/papers/reference",
+            json={"title": "Test", "bibtex": raw_bibtex},
+        )
+        assert resp.status_code == 200
+
+        doc_id = resp.json()["id"]
+        bib_resp = client.get(f"/api/documents/{doc_id}/bibtex")
+        assert bib_resp.status_code == 200
+        assert "test2024" in bib_resp.json()["bibtex"]
+
+    def test_add_reference_requires_title(self, client, db_home: str):
+        """Reference without title returns 422 validation error."""
+        resp = client.post(
+            "/api/documents/papers/reference",
+            json={"author": "Someone"},
+        )
+        assert resp.status_code == 422
+
+    def test_add_reference_with_citation_key(self, client, db_home: str):
+        """Custom citation_key determines the synthetic path."""
+        resp = client.post(
+            "/api/documents/papers/reference",
+            json={"title": "Paper", "citation_key": "mykey2024"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "mykey2024" in data["path"]
+        assert data["filename"] == "mykey2024.bib"
+
+    def test_add_reference_extra_metadata(self, client, db_home: str):
+        """Extra metadata fields are preserved."""
+        resp = client.post(
+            "/api/documents/papers/reference",
+            json={
+                "title": "Paper with extras",
+                "extra_metadata": {"custom_field": "value", "tags": ["ml", "nlp"]},
+            },
+        )
+        assert resp.status_code == 200
+
+        doc_id = resp.json()["id"]
+        meta_resp = client.get(f"/api/documents/{doc_id}/meta")
+        assert meta_resp.status_code == 200
+        meta = meta_resp.json()
+        assert meta["custom_field"] == "value"
+        assert meta["tags"] == ["ml", "nlp"]
+
+    def test_reference_has_searchable_content(self, client, db_home: str):
+        """Reference documents have searchable content derived from metadata."""
+        resp = client.post(
+            "/api/documents/papers/reference",
+            json={"title": "Searchable Reference Title", "author": "Author Name"},
+        )
+        assert resp.status_code == 200
+
+        doc_id = resp.json()["id"]
+        content_resp = client.get(f"/api/documents/{doc_id}/content")
+        assert content_resp.status_code == 200
+        # Content is populated from metadata for FTS indexing
+        content = content_resp.json()["content"]
+        assert "Searchable Reference Title" in content
+        assert "Author Name" in content
+
+    def test_reference_file_download_returns_404(self, client, db_home: str):
+        """Downloading file for a reference returns 404 (no file on disk)."""
+        resp = client.post(
+            "/api/documents/papers/reference",
+            json={"title": "No File Ref"},
+        )
+        assert resp.status_code == 200
+
+        doc_id = resp.json()["id"]
+        file_resp = client.get(f"/api/documents/{doc_id}/file")
+        assert file_resp.status_code == 404
+
+    def test_search_finds_references(self, client, db_home: str):
+        """Search can find references by title/metadata."""
+        client.post(
+            "/api/documents/papers/reference",
+            json={"title": "Transformer Architecture", "author": "Vaswani"},
+        )
+        # Also index a regular generic doc to ensure mixed results work
+        from pathlib import Path
+        home = Path(db_home)
+        md_path = home / "note.md"
+        md_path.write_text("# Some notes\nRegular document content.")
+        client.post(
+            "/api/index/add",
+            json={"filepath": str(md_path), "document_type": "generic"},
+        )
+
+        resp = client.get("/api/search?q=Transformer")
+        assert resp.status_code == 200
+        data = resp.json()
+        # Should find the reference in document results
+        assert len(data["documents"]["results"]) >= 1
+        hit = data["documents"]["results"][0]
+        assert hit["document"]["source_type"] == "reference"
+
+    def test_duplicate_reference_same_key_updates(self, client, db_home: str):
+        """Adding a reference with same citation key updates existing entry."""
+        resp1 = client.post(
+            "/api/documents/papers/reference",
+            json={"title": "Original Title", "citation_key": "dup2024"},
+        )
+        assert resp1.status_code == 200
+        doc_id = resp1.json()["id"]
+
+        resp2 = client.post(
+            "/api/documents/papers/reference",
+            json={"title": "Updated Title", "citation_key": "dup2024"},
+        )
+        assert resp2.status_code == 200
+        # Same ID (upsert by path)
+        assert resp2.json()["id"] == doc_id
+
+        # Verify updated title
+        meta_resp = client.get(f"/api/documents/{doc_id}/meta")
+        assert meta_resp.json()["title"] == "Updated Title"

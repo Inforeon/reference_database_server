@@ -15,6 +15,7 @@ class DocumentResponse(BaseModel):
     directory: str
     extension: str
     document_type: str = "generic"
+    source_type: str | None = None
     size: int
     mtime: float
     metadata: dict[str, Any]
@@ -49,6 +50,20 @@ class AddPaperRequest(BaseModel):
     filepath: str
     doi: str | None = None
     skip_bib: bool = False
+    extra_metadata: dict[str, Any] = {}
+
+
+class AddReferenceRequest(BaseModel):
+    """Request to register a reference (metadata-only, no file)."""
+    title: str
+    author: str | None = None
+    year: str | None = None
+    journal: str | None = None
+    booktitle: str | None = None
+    doi: str | None = None
+    url: str | None = None
+    bibtex: str | None = None
+    citation_key: str | None = None
     extra_metadata: dict[str, Any] = {}
 
 

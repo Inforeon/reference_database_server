@@ -17,7 +17,7 @@ class Document:
     directory: str = ""
     extension: str = ""
     document_type: str = "generic"
-    textbook_variant: Optional[str] = None  # 'file' | 'directory' (textbooks only)
+    source_type: Optional[str] = None  # 'file' | 'directory' | 'reference'
     size: int = 0
     mtime: float = 0.0
     content_hash: str = ""
@@ -42,7 +42,7 @@ class Document:
             extracted_raw = row["extracted_metadata"] if "extracted_metadata" in keys else None
             sidecar_raw = row["sidecar_metadata"] if "sidecar_metadata" in keys else None
             indexed_raw = row["indexed_at"] if "indexed_at" in keys else None
-            variant_raw = row["textbook_variant"] if "textbook_variant" in keys else None
+            variant_raw = row["source_type"] if "source_type" in keys else None
             return cls(
                 id=row["id"] if "id" in keys else None,
                 path=row["path"],
@@ -50,7 +50,7 @@ class Document:
                 directory=row["directory"],
                 extension=row["extension"],
                 document_type=row["document_type"] if "document_type" in keys and row["document_type"] else "generic",
-                textbook_variant=variant_raw if variant_raw else None,
+                source_type=variant_raw if variant_raw else None,
                 size=row["size"] if "size" in keys and row["size"] else 0,
                 mtime=row["mtime"] if "mtime" in keys and row["mtime"] else 0.0,
                 content_hash=row["content_hash"] if "content_hash" in keys and row["content_hash"] else "",
@@ -68,7 +68,7 @@ class Document:
             directory=row[3],
             extension=row[4],
             document_type=row[5] if len(row) > 5 and row[5] else "generic",
-            textbook_variant=row[6] if len(row) > 6 and row[6] else None,
+            source_type=row[6] if len(row) > 6 and row[6] else None,
             size=row[7] if len(row) > 7 and row[7] else 0,
             mtime=row[8] if len(row) > 8 and row[8] else 0.0,
             content_hash=row[9] if len(row) > 9 and row[9] else "",

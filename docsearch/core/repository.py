@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS documents (
     directory TEXT NOT NULL,
     extension TEXT NOT NULL,
     document_type TEXT DEFAULT 'generic',
-    textbook_variant TEXT,
+    source_type TEXT,
     size INTEGER DEFAULT 0,
     mtime REAL DEFAULT 0,
     content_hash TEXT DEFAULT '',
@@ -119,11 +119,15 @@ class Repository:
         """Backfill columns that were added after initial schema creation."""
         cur = self._conn.cursor()
 
-        # --- documents.textbook_variant ---
+        # --- documents.source_type (was textbook_variant, now source_type) ---
         try:
             cols = [row["name"] for row in cur.execute("PRAGMA table_info(documents)").fetchall()]
-            if "textbook_variant" not in cols:
-                cur.execute("ALTER TABLE documents ADD COLUMN textbook_variant TEXT")
+            if "textbook_variant" in cols and "source_type" not in cols:
+                # Rename existing column
+                cur.execute("ALTER TABLE documents RENAME COLUMN textbook_variant TO source_type")
+                self._conn.commit()
+            elif "source_type" not in cols:
+                cur.execute("ALTER TABLE documents ADD COLUMN source_type TEXT")
                 self._conn.commit()
         except Exception:
             pass
@@ -191,7 +195,7 @@ class Repository:
             cur.execute(
                 """
                 INSERT INTO documents (
-                    path, filename, directory, extension, document_type, textbook_variant, size, mtime,
+                    path, filename, directory, extension, document_type, source_type, size, mtime,
                     content_hash, extracted_metadata, sidecar_metadata,
                     full_text, indexed_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -200,7 +204,7 @@ class Repository:
                     directory = excluded.directory,
                     extension = excluded.extension,
                     document_type = excluded.document_type,
-                    textbook_variant = excluded.textbook_variant,
+                    source_type = excluded.source_type,
                     size = excluded.size,
                     mtime = excluded.mtime,
                     content_hash = excluded.content_hash,
@@ -215,7 +219,7 @@ class Repository:
                     doc.directory,
                     doc.extension,
                     doc.document_type,
-                    doc.textbook_variant,
+                    doc.source_type,
                     doc.size,
                     doc.mtime,
                     doc.content_hash,
@@ -488,7 +492,7 @@ class Repository:
                        tc.page_count, tc.file_path,
                        tc.metadata AS ch_metadata, tc.full_text AS ch_full_text,
                        d.id AS doc_id, d.path, d.filename, d.directory, d.extension,
-                       d.document_type, d.size, d.mtime, d.content_hash,
+                       d.document_type, d.source_type, d.size, d.mtime, d.content_hash,
                        d.extracted_metadata, d.sidecar_metadata,
                        d.full_text AS doc_full_text, d.indexed_at,
                        rank AS relevance
@@ -506,7 +510,7 @@ class Repository:
                        tc.page_count, tc.file_path,
                        tc.metadata AS ch_metadata, tc.full_text AS ch_full_text,
                        d.id AS doc_id, d.path, d.filename, d.directory, d.extension,
-                       d.document_type, d.size, d.mtime, d.content_hash,
+                       d.document_type, d.source_type, d.size, d.mtime, d.content_hash,
                        d.extracted_metadata, d.sidecar_metadata,
                        d.full_text AS doc_full_text, d.indexed_at,
                        0.0 AS relevance
@@ -545,6 +549,7 @@ class Repository:
                 "directory": row["directory"],
                 "extension": row["extension"],
                 "document_type": row["document_type"],
+                "source_type": row["source_type"],
                 "size": row["size"],
                 "mtime": row["mtime"],
                 "content_hash": row["content_hash"],

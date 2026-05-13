@@ -37,14 +37,22 @@ class Indexer:
         """Index a single file. Returns the Document or None on failure.
 
         ``document_type`` selects the handler (``"generic"``, ``"paper"``,
-        ``"textbook"``, …).  Defaults to ``"generic"``.
+        ``"textbook"``, ``"reference"``).  Defaults to ``"generic"``.
 
         ``extra_metadata`` is a dict of user-supplied key/value pairs merged
         into the sidecar metadata (e.g. ``{"doi": "10.1234/foo"}``).
 
         ``skip_bib`` skips pdf2bib processing for papers (generates bibtex
         from available metadata instead).
+
+        For ``document_type="reference"``, ``filepath`` is ignored and the
+        entry is created from ``extra_metadata`` alone.
         """
+        # Reference type doesn't require a file
+        if document_type == "reference":
+            handler = get_handler("reference", self.repo, extra_metadata=extra_metadata, skip_bib=skip_bib)
+            return handler.handle(Path("."))
+
         p = Path(filepath).resolve()
         # Allow directories for textbook type (chapter-per-file variant)
         if document_type == "textbook":
