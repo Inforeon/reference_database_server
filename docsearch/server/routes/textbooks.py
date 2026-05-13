@@ -17,10 +17,10 @@ from docsearch.server.schemas import (
     TextbookUploadResponse,
 )
 
-router = APIRouter(prefix="/api/textbooks", tags=["textbooks"])
+router = APIRouter(prefix="/api/documents", tags=["textbooks"])
 
 
-@router.post("/add", response_model=TextbookUploadResponse)
+@router.post("/textbooks/add", response_model=TextbookUploadResponse)
 async def add_textbook(
     body: AddTextbookRequest,
     config = Depends(get_config),
@@ -50,7 +50,7 @@ async def add_textbook(
         repo.close()
 
 
-@router.post("/upload", response_model=TextbookUploadResponse)
+@router.post("/textbooks/upload", response_model=TextbookUploadResponse)
 async def upload_textbook(
     directory: str = "",
     filename: str | None = None,
@@ -107,7 +107,7 @@ async def upload_textbook(
         repo.close()
 
 
-@router.get("/documents/{doc_id}/chapters", response_model=list[ChapterResponse])
+@router.get("/{doc_id}/chapters", response_model=list[ChapterResponse])
 async def list_chapters(
     doc_id: int,
     config = Depends(get_config),
@@ -119,7 +119,10 @@ async def list_chapters(
         if not doc:
             raise HTTPException(status_code=404, detail="Document not found.")
         if doc.document_type != "textbook":
-            raise HTTPException(status_code=400, detail="Document is not a textbook.")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot list chapters: document {doc.filename!r} is type '{doc.document_type}', not 'textbook'.",
+            )
 
         chapters = repo.get_chapters(doc_id)
         return [
@@ -138,7 +141,7 @@ async def list_chapters(
         repo.close()
 
 
-@router.get("/documents/{doc_id}/chapters/{chapter_index}", response_model=ChapterContentResponse)
+@router.get("/{doc_id}/chapters/{chapter_index}", response_model=ChapterContentResponse)
 async def get_chapter(
     doc_id: int,
     chapter_index: int,
@@ -151,7 +154,10 @@ async def get_chapter(
         if not doc:
             raise HTTPException(status_code=404, detail="Document not found.")
         if doc.document_type != "textbook":
-            raise HTTPException(status_code=400, detail="Document is not a textbook.")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot get chapter: document {doc.filename!r} is type '{doc.document_type}', not 'textbook'.",
+            )
 
         chapter = repo.get_chapter(doc_id, chapter_index)
         if not chapter:

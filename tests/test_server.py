@@ -277,7 +277,7 @@ class TestPaperEndpoints:
         file_path.write_text("pdf content")
 
         resp = client.post(
-            "/api/papers/add",
+            "/api/documents/papers/add",
             json={"filepath": str(file_path), "skip_bib": True},
         )
         assert resp.status_code == 200
@@ -290,7 +290,7 @@ class TestPaperEndpoints:
         file_path.write_text("pdf content")
 
         resp = client.post(
-            "/api/papers/add",
+            "/api/documents/papers/add",
             json={
                 "filepath": str(file_path),
                 "doi": "10.1234/test",
@@ -302,7 +302,7 @@ class TestPaperEndpoints:
     def test_add_paper_missing_file(self, client):
         """POST /api/papers/add with nonexistent path should 404."""
         resp = client.post(
-            "/api/papers/add",
+            "/api/documents/papers/add",
             json={"filepath": "/nonexistent/file.pdf"},
         )
         assert resp.status_code == 404
@@ -310,7 +310,7 @@ class TestPaperEndpoints:
     def test_upload_paper(self, client, db_home: str):
         """POST /api/papers/upload should save and index a paper."""
         resp = client.post(
-            "/api/papers/upload?skip_bib=true",
+            "/api/documents/papers/upload?skip_bib=true",
             files={"file": ("test.pdf", b"%PDF-1.4 fake pdf", "application/pdf")},
         )
         assert resp.status_code == 200
@@ -320,7 +320,7 @@ class TestPaperEndpoints:
     def test_upload_paper_with_doi(self, client, db_home: str):
         """POST /api/papers/upload with DOI query param."""
         resp = client.post(
-            "/api/papers/upload?doi=10.1234/my-paper&skip_bib=true",
+            "/api/documents/papers/upload?doi=10.1234/my-paper&skip_bib=true",
             files={"file": ("doi_test.pdf", b"%PDF-1.4 fake pdf", "application/pdf")},
         )
         assert resp.status_code == 200
@@ -328,7 +328,7 @@ class TestPaperEndpoints:
     def test_upload_paper_rejects_path_traversal(self, client, db_home: str):
         """POST /api/papers/upload should reject directory traversal."""
         resp = client.post(
-            "/api/papers/upload?directory=../../etc",
+            "/api/documents/papers/upload?directory=../../etc",
             files={"file": ("evil.pdf", b"%PDF-1.4", "application/pdf")},
         )
         assert resp.status_code == 400
@@ -341,7 +341,7 @@ class TestTextbookEndpoints:
         file_path.write_text("pdf content")
 
         resp = client.post(
-            "/api/textbooks/add",
+            "/api/documents/textbooks/add",
             json={"filepath": str(file_path)},
         )
         assert resp.status_code == 200
@@ -351,7 +351,7 @@ class TestTextbookEndpoints:
     def test_add_textbook_missing_file(self, client):
         """POST /api/textbooks/add with nonexistent path should 404."""
         resp = client.post(
-            "/api/textbooks/add",
+            "/api/documents/textbooks/add",
             json={"filepath": "/nonexistent/book.pdf"},
         )
         assert resp.status_code == 404
@@ -359,7 +359,7 @@ class TestTextbookEndpoints:
     def test_upload_textbook(self, client, db_home: str):
         """POST /api/textbooks/upload should save and index a textbook."""
         resp = client.post(
-            "/api/textbooks/upload",
+            "/api/documents/textbooks/upload",
             files={"file": ("book.pdf", b"%PDF-1.4 fake pdf", "application/pdf")},
         )
         assert resp.status_code == 200
@@ -369,7 +369,7 @@ class TestTextbookEndpoints:
     def test_upload_textbook_rejects_path_traversal(self, client, db_home: str):
         """POST /api/textbooks/upload should reject directory traversal."""
         resp = client.post(
-            "/api/textbooks/upload?directory=../../tmp",
+            "/api/documents/textbooks/upload?directory=../../tmp",
             files={"file": ("evil.pdf", b"%PDF-1.4", "application/pdf")},
         )
         assert resp.status_code == 400
@@ -396,17 +396,17 @@ class TestChapterEndpoints:
         doc.close()
 
         resp = client.post(
-            "/api/textbooks/add",
+            "/api/documents/textbooks/add",
             json={"filepath": str(pdf_path)},
         )
         assert resp.status_code == 200
         return resp.json()["id"]
 
     def test_list_chapters(self, client, db_home: str):
-        """GET /api/textbooks/documents/{id}/chapters returns chapter list."""
+        """GET /api/documents/{id}/chapters returns chapter list."""
         doc_id = self._index_textbook_with_chapters(client, db_home)
 
-        resp = client.get(f"/api/textbooks/documents/{doc_id}/chapters")
+        resp = client.get(f"/api/documents/{doc_id}/chapters")
         assert resp.status_code == 200
         data = resp.json()
         assert len(data) == 2
@@ -418,17 +418,17 @@ class TestChapterEndpoints:
         """Chapter metadata should inherit from parent textbook."""
         doc_id = self._index_textbook_with_chapters(client, db_home)
 
-        resp = client.get(f"/api/textbooks/documents/{doc_id}/chapters")
+        resp = client.get(f"/api/documents/{doc_id}/chapters")
         assert resp.status_code == 200
         data = resp.json()
         # Parent author should be inherited
         assert data[0]["metadata"]["author"] == "Server Author"
 
     def test_get_chapter_content(self, client, db_home: str):
-        """GET /api/textbooks/documents/{id}/chapters/{index} returns chapter text."""
+        """GET /api/documents/{id}/chapters/{index} returns chapter text."""
         doc_id = self._index_textbook_with_chapters(client, db_home)
 
-        resp = client.get(f"/api/textbooks/documents/{doc_id}/chapters/0")
+        resp = client.get(f"/api/documents/{doc_id}/chapters/0")
         assert resp.status_code == 200
         data = resp.json()
         assert data["chapter_index"] == 0
@@ -439,7 +439,7 @@ class TestChapterEndpoints:
         """Requesting nonexistent chapter index returns 404."""
         doc_id = self._index_textbook_with_chapters(client, db_home)
 
-        resp = client.get(f"/api/textbooks/documents/{doc_id}/chapters/99")
+        resp = client.get(f"/api/documents/{doc_id}/chapters/99")
         assert resp.status_code == 404
 
     def test_list_chapters_on_non_textbook_returns_400(self, client, db_home: str):
@@ -456,7 +456,7 @@ class TestChapterEndpoints:
         assert resp.status_code == 200
         doc_id = resp.json()["id"]
 
-        resp = client.get(f"/api/textbooks/documents/{doc_id}/chapters")
+        resp = client.get(f"/api/documents/{doc_id}/chapters")
         assert resp.status_code == 400
 
     def test_search_returns_separated_groups(self, client, db_home: str):

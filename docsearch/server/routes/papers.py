@@ -12,7 +12,7 @@ from docsearch.core.repository import Repository
 from docsearch.server.dependencies import get_config
 from docsearch.server.schemas import AddPaperRequest, PaperUploadResponse
 
-router = APIRouter(prefix="/api/papers", tags=["papers"])
+router = APIRouter(prefix="/api/documents/papers", tags=["papers"])
 
 
 @router.post("/add", response_model=PaperUploadResponse)
