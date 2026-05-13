@@ -46,7 +46,11 @@ class Indexer:
         from available metadata instead).
         """
         p = Path(filepath).resolve()
-        if not p.is_file():
+        # Allow directories for textbook type (chapter-per-file variant)
+        if document_type == "textbook":
+            if not p.exists():
+                raise FileNotFoundError(f"Path not found: {p}")
+        elif not p.is_file():
             raise FileNotFoundError(f"File not found: {p}")
 
         handler = get_handler(document_type, self.repo, extra_metadata=extra_metadata, skip_bib=skip_bib)

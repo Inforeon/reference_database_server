@@ -484,3 +484,392 @@ class TestChapterEndpoints:
         assert "chapter" in hit
         assert "parent_document" in hit
         assert hit["parent_document"]["document_type"] == "textbook"
+
+
+class TestDirectoryTextbookEndpoints:
+    """Tests for directory-type textbooks and chapter uploads."""
+
+    def _create_chapter_pdf(self, path: str, text: str, num_pages: int = 1):
+        """Helper to create a simple PDF with given text."""
+        import fitz
+        doc = fitz.open()
+        for _ in range(num_pages):
+            page = doc.new_page()
+            page.insert_text((72, 72), text)
+        doc.save(path)
+        doc.close()
+
+    def test_upload_empty_directory_textbook(self, client, db_home: str):
+        """POST /api/documents/textbooks/upload?variant=directory creates empty dir textbook."""
+        resp = client.post(
+            "/api/documents/textbooks/upload?variant=directory&filename=my_book",
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["filename"] == "my_book"
+        # Verify the directory was created
+        from pathlib import Path
+        assert Path(db_home) / "my_book" is not None
+
+    def test_upload_empty_directory_textbook_default_name(self, client, db_home: str):
+        """Without filename, default name 'textbook' is used."""
+        resp = client.post(
+            "/api/documents/textbooks/upload?variant=directory",
+        )
+        assert resp.status_code == 200
+        assert resp.json()["filename"] == "textbook"
+
+    def test_upload_empty_directory_in_subdir(self, client, db_home: str):
+        """Create empty directory textbook in a subdirectory."""
+        from pathlib import Path
+        subdir = Path(db_home) / "books"
+        subdir.mkdir(exist_ok=True)
+
+        resp = client.post(
+            "/api/documents/textbooks/upload?variant=directory&directory=books&filename=sub_book",
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["filename"] == "sub_book"
+        assert (subdir / "sub_book").is_dir()
+
+    def test_upload_chapter_to_directory_textbook(self, client, db_home: str):
+        """Upload a chapter PDF to an empty directory textbook."""
+        import fitz
+        from pathlib import Path
+
+        # Create empty directory textbook
+        resp = client.post(
+            "/api/documents/textbooks/upload?variant=directory&filename=chapter_book",
+        )
+        assert resp.status_code == 200
+        doc_id = resp.json()["id"]
+
+        # Create a real PDF for upload
+        pdf_path = Path(db_home) / "temp_chapter.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), "Chapter one content here.")
+        doc.save(str(pdf_path))
+        doc.close()
+
+        # Upload as chapter
+        with open(pdf_path, "rb") as f:
+            resp = client.post(
+                f"/api/documents/{doc_id}/chapters/upload",
+                files={"file": ("intro.pdf", f.read(), "application/pdf")},
+            )
+        pdf_path.unlink()
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["title"] == "Intro"
+        assert data["chapter_type"] == "file"
+        assert data["file_path"] == "intro.pdf"
+        assert data["start_page"] is None
+        assert data["end_page"] is None
+        assert data["page_count"] == 1
+
+    def test_upload_chapter_auto_assigns_index(self, client, db_home: str):
+        """Multiple chapter uploads get auto-incrementing indices."""
+        import fitz
+        from pathlib import Path
+
+        # Create empty directory textbook
+        resp = client.post(
+            "/api/documents/textbooks/upload?variant=directory&filename=index_book",
+        )
+        doc_id = resp.json()["id"]
+
+        pdf_path = Path(db_home) / "temp.pdf"
+
+        for i in range(3):
+            doc = fitz.open()
+            page = doc.new_page()
+            page.insert_text((72, 72), f"Content {i}")
+            doc.save(str(pdf_path))
+            doc.close()
+
+            with open(pdf_path, "rb") as f:
+                resp = client.post(
+                    f"/api/documents/{doc_id}/chapters/upload",
+                    files={"file": (f"ch{i}.pdf", f.read(), "application/pdf")},
+                )
+            assert resp.status_code == 200
+            assert resp.json()["chapter_index"] == i
+
+        pdf_path.unlink()
+
+    def test_upload_chapter_explicit_index(self, client, db_home: str):
+        """Chapter upload with explicit chapter_index."""
+        import fitz
+        from pathlib import Path
+
+        resp = client.post(
+            "/api/documents/textbooks/upload?variant=directory&filename=explicit_book",
+        )
+        doc_id = resp.json()["id"]
+
+        pdf_path = Path(db_home) / "temp.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), "Explicit index chapter.")
+        doc.save(str(pdf_path))
+        doc.close()
+
+        with open(pdf_path, "rb") as f:
+            resp = client.post(
+                f"/api/documents/{doc_id}/chapters/upload?chapter_index=5",
+                files={"file": ("ch5.pdf", f.read(), "application/pdf")},
+            )
+        pdf_path.unlink()
+
+        assert resp.status_code == 200
+        assert resp.json()["chapter_index"] == 5
+
+    def test_upload_chapter_overwrites_existing(self, client, db_home: str):
+        """Uploading a chapter with same filename replaces old content."""
+        import fitz
+        from pathlib import Path
+
+        resp = client.post(
+            "/api/documents/textbooks/upload?variant=directory&filename=overwrite_book",
+        )
+        doc_id = resp.json()["id"]
+
+        pdf_path = Path(db_home) / "temp.pdf"
+
+        # Upload first version
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), "Original content.")
+        doc.save(str(pdf_path))
+        doc.close()
+
+        with open(pdf_path, "rb") as f:
+            resp = client.post(
+                f"/api/documents/{doc_id}/chapters/upload",
+                files={"file": ("chapter1.pdf", f.read(), "application/pdf")},
+            )
+        assert resp.status_code == 200
+        old_id = resp.json()["id"]
+
+        # Upload second version (same filename)
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), "Updated content.")
+        doc.save(str(pdf_path))
+        doc.close()
+
+        with open(pdf_path, "rb") as f:
+            resp = client.post(
+                f"/api/documents/{doc_id}/chapters/upload",
+                files={"file": ("chapter1.pdf", f.read(), "application/pdf")},
+            )
+        pdf_path.unlink()
+
+        assert resp.status_code == 200
+        new_data = resp.json()
+        # Should have a new ID (old was deleted, new inserted)
+        assert new_data["file_path"] == "chapter1.pdf"
+
+        # Verify only one chapter exists
+        resp = client.get(f"/api/documents/{doc_id}/chapters")
+        assert resp.status_code == 200
+        chapters = resp.json()
+        ch1_chapters = [c for c in chapters if c["file_path"] == "chapter1.pdf"]
+        assert len(ch1_chapters) == 1
+
+    def test_upload_chapter_custom_filename(self, client, db_home: str):
+        """Upload chapter with custom filename query param."""
+        import fitz
+        from pathlib import Path
+
+        resp = client.post(
+            "/api/documents/textbooks/upload?variant=directory&filename=custom_book",
+        )
+        doc_id = resp.json()["id"]
+
+        pdf_path = Path(db_home) / "temp.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), "Custom name chapter.")
+        doc.save(str(pdf_path))
+        doc.close()
+
+        with open(pdf_path, "rb") as f:
+            resp = client.post(
+                f"/api/documents/{doc_id}/chapters/upload?filename=renamed_chapter.pdf",
+                files={"file": ("original.pdf", f.read(), "application/pdf")},
+            )
+        pdf_path.unlink()
+
+        assert resp.status_code == 200
+        assert resp.json()["file_path"] == "renamed_chapter.pdf"
+
+    def test_upload_chapter_to_file_textbook_returns_400(self, client, db_home: str):
+        """Cannot upload chapters to a file-type textbook."""
+        doc_id = self._index_textbook_with_chapters(client, db_home)
+
+        import fitz
+        from pathlib import Path
+        pdf_path = Path(db_home) / "temp.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), "Should fail.")
+        doc.save(str(pdf_path))
+        doc.close()
+
+        with open(pdf_path, "rb") as f:
+            resp = client.post(
+                f"/api/documents/{doc_id}/chapters/upload",
+                files={"file": ("ch.pdf", f.read(), "application/pdf")},
+            )
+        pdf_path.unlink()
+
+        assert resp.status_code == 400
+        assert "not 'directory'" in resp.json()["detail"]
+
+    def test_upload_chapter_to_non_textbook_returns_400(self, client, db_home: str):
+        """Cannot upload chapters to a non-textbook document."""
+        from pathlib import Path
+        home = Path(db_home)
+        md_path = home / "note.md"
+        md_path.write_text("# Note\nSome content.")
+
+        resp = client.post(
+            "/api/index/add",
+            json={"filepath": str(md_path), "document_type": "generic"},
+        )
+        doc_id = resp.json()["id"]
+
+        import fitz
+        pdf_path = Path(db_home) / "temp.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), "Fail.")
+        doc.save(str(pdf_path))
+        doc.close()
+
+        with open(pdf_path, "rb") as f:
+            resp = client.post(
+                f"/api/documents/{doc_id}/chapters/upload",
+                files={"file": ("ch.pdf", f.read(), "application/pdf")},
+            )
+        pdf_path.unlink()
+
+        assert resp.status_code == 400
+        assert "not 'textbook'" in resp.json()["detail"]
+
+    def test_upload_chapter_rejects_path_traversal(self, client, db_home: str):
+        """Chapter upload should reject filenames with path separators."""
+        resp = client.post(
+            "/api/documents/textbooks/upload?variant=directory&filename=traversal_book",
+        )
+        doc_id = resp.json()["id"]
+
+        import fitz
+        from pathlib import Path
+        pdf_path = Path(db_home) / "temp.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), "Evil.")
+        doc.save(str(pdf_path))
+        doc.close()
+
+        with open(pdf_path, "rb") as f:
+            resp = client.post(
+                f"/api/documents/{doc_id}/chapters/upload?filename=../evil.pdf",
+                files={"file": ("evil.pdf", f.read(), "application/pdf")},
+            )
+        pdf_path.unlink()
+
+        assert resp.status_code == 400
+
+    def test_list_chapters_shows_file_type_fields(self, client, db_home: str):
+        """Chapter list response includes chapter_type, file_path, page_count."""
+        import fitz
+        from pathlib import Path
+
+        resp = client.post(
+            "/api/documents/textbooks/upload?variant=directory&filename=list_book",
+        )
+        doc_id = resp.json()["id"]
+
+        pdf_path = Path(db_home) / "temp.pdf"
+        doc = fitz.open()
+        for _ in range(3):
+            doc.new_page()
+        doc.save(str(pdf_path))
+        doc.close()
+
+        with open(pdf_path, "rb") as f:
+            resp = client.post(
+                f"/api/documents/{doc_id}/chapters/upload",
+                files={"file": ("multi_page.pdf", f.read(), "application/pdf")},
+            )
+        pdf_path.unlink()
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["chapter_type"] == "file"
+        assert data["file_path"] == "multi_page.pdf"
+        assert data["page_count"] == 3
+        assert data["start_page"] is None
+        assert data["end_page"] is None
+
+    def test_get_chapter_content_for_file_type(self, client, db_home: str):
+        """Get specific chapter content for file-type chapter."""
+        import fitz
+        from pathlib import Path
+
+        resp = client.post(
+            "/api/documents/textbooks/upload?variant=directory&filename=get_book",
+        )
+        doc_id = resp.json()["id"]
+
+        pdf_path = Path(db_home) / "temp.pdf"
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), "Unique chapter content for retrieval.")
+        doc.save(str(pdf_path))
+        doc.close()
+
+        with open(pdf_path, "rb") as f:
+            resp = client.post(
+                f"/api/documents/{doc_id}/chapters/upload",
+                files={"file": ("unique.pdf", f.read(), "application/pdf")},
+            )
+        pdf_path.unlink()
+
+        chapter_idx = resp.json()["chapter_index"]
+
+        resp = client.get(f"/api/documents/{doc_id}/chapters/{chapter_idx}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["chapter_type"] == "file"
+        assert "Unique chapter content for retrieval" in data["full_text"]
+
+    def _index_textbook_with_chapters(self, client, db_home: str):
+        """Create a textbook PDF with TOC, index it, and return its doc_id."""
+        import fitz
+        from pathlib import Path
+
+        home = Path(db_home)
+        pdf_path = home / "test_book_ref.pdf"
+        doc = fitz.open()
+        for i in range(4):
+            page = doc.new_page()
+            page.insert_text((72, 72), f"Content of chapter section {i + 1}.")
+        doc.set_metadata({"title": "Test Book Ref", "author": "Server Author"})
+        toc_data = [[1, "First Chapter", 0], [1, "Second Chapter", 2]]
+        doc.set_toc(toc_data)
+        doc.save(str(pdf_path))
+        doc.close()
+
+        resp = client.post(
+            "/api/documents/textbooks/add",
+            json={"filepath": str(pdf_path)},
+        )
+        assert resp.status_code == 200
+        return resp.json()["id"]

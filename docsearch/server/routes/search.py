@@ -82,8 +82,11 @@ async def search(
                     textbook_id=r.chapter.textbook_id,
                     chapter_index=r.chapter.chapter_index,
                     title=r.chapter.title,
+                    chapter_type=r.chapter.chapter_type or "range",
                     start_page=r.chapter.start_page,
                     end_page=r.chapter.end_page,
+                    page_count=r.chapter.page_count,
+                    file_path=r.chapter.file_path,
                     metadata=r.chapter.combined_metadata(r.document),
                 )
                 doc_resp = DocumentResponse(

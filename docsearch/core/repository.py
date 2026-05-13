@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS documents (
     directory TEXT NOT NULL,
     extension TEXT NOT NULL,
     document_type TEXT DEFAULT 'generic',
+    textbook_variant TEXT,
     size INTEGER DEFAULT 0,
     mtime REAL DEFAULT 0,
     content_hash TEXT DEFAULT '',
@@ -58,8 +59,11 @@ CREATE TABLE IF NOT EXISTS textbook_chapters (
     textbook_id INTEGER NOT NULL,
     chapter_index INTEGER NOT NULL,
     title TEXT NOT NULL DEFAULT '',
-    start_page INTEGER DEFAULT 1,
-    end_page INTEGER DEFAULT 0,
+    chapter_type TEXT DEFAULT 'range',
+    start_page INTEGER,
+    end_page INTEGER,
+    page_count INTEGER,
+    file_path TEXT,
     metadata TEXT DEFAULT '{}',
     full_text TEXT DEFAULT '',
     FOREIGN KEY (textbook_id) REFERENCES documents(id) ON DELETE CASCADE
@@ -109,6 +113,66 @@ class Repository:
     def _init_schema(self) -> None:
         """Create all tables, triggers, and indexes if they do not exist."""
         self._conn.executescript(_SCHEMA_SQL)
+        self._migrate_existing_columns()
+
+    def _migrate_existing_columns(self) -> None:
+        """Backfill columns that were added after initial schema creation."""
+        cur = self._conn.cursor()
+
+        # --- documents.textbook_variant ---
+        try:
+            cols = [row["name"] for row in cur.execute("PRAGMA table_info(documents)").fetchall()]
+            if "textbook_variant" not in cols:
+                cur.execute("ALTER TABLE documents ADD COLUMN textbook_variant TEXT")
+                self._conn.commit()
+        except Exception:
+            pass
+
+        # --- textbook_chapters: chapter_type, page_count, file_path; make start_page/end_page nullable ---
+        try:
+            tc_cols = [row["name"] for row in cur.execute("PRAGMA table_info(textbook_chapters)").fetchall()]
+            needs_rename = False
+            if "chapter_type" not in tc_cols or "page_count" not in tc_cols or "file_path" not in tc_cols:
+                needs_rename = True
+
+            if needs_rename:
+                # SQLite has limited ALTER TABLE support — rebuild the table
+                self._rebuild_chapters_table(cur, tc_cols)
+                self._conn.commit()
+        except Exception:
+            pass
+
+    def _rebuild_chapters_table(self, cur: sqlite3.Cursor, existing_cols: list[str]) -> None:
+        """Rebuild textbook_chapters with new columns, preserving existing data."""
+        old_name = "textbook_chapters"
+        temp_name = "textbook_chapters_old"
+        new_name = "textbook_chapters_new"
+
+        # Select columns that exist in the old table
+        select_cols = ["id", "textbook_id", "chapter_index", "title"]
+        for col in ["start_page", "end_page"]:
+            if col in existing_cols:
+                select_cols.append(col)
+        if "metadata" in existing_cols:
+            select_cols.append("metadata")
+        if "full_text" in existing_cols:
+            select_cols.append("full_text")
+        select_list = ", ".join(select_cols)
+
+        cur.execute(f"ALTER TABLE {old_name} RENAME TO {temp_name}")
+        cur.executescript(_SCHEMA_SQL)  # Create fresh tables (triggers will be no-ops since old_name gone)
+
+        insert_cols = ", ".join(["id", "textbook_id", "chapter_index", "title", "start_page", "end_page"])
+        if "metadata" in existing_cols:
+            insert_cols += ", metadata"
+        if "full_text" in existing_cols:
+            insert_cols += ", full_text"
+
+        cur.execute(f"""
+            INSERT INTO {new_name} ({insert_cols})
+            SELECT {select_list} FROM {temp_name}
+        """)
+        cur.execute(f"DROP TABLE {temp_name}")
 
     @contextmanager
     def transaction(self):
@@ -127,15 +191,16 @@ class Repository:
             cur.execute(
                 """
                 INSERT INTO documents (
-                    path, filename, directory, extension, document_type, size, mtime,
+                    path, filename, directory, extension, document_type, textbook_variant, size, mtime,
                     content_hash, extracted_metadata, sidecar_metadata,
                     full_text, indexed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(path) DO UPDATE SET
                     filename = excluded.filename,
                     directory = excluded.directory,
                     extension = excluded.extension,
                     document_type = excluded.document_type,
+                    textbook_variant = excluded.textbook_variant,
                     size = excluded.size,
                     mtime = excluded.mtime,
                     content_hash = excluded.content_hash,
@@ -150,6 +215,7 @@ class Repository:
                     doc.directory,
                     doc.extension,
                     doc.document_type,
+                    doc.textbook_variant,
                     doc.size,
                     doc.mtime,
                     doc.content_hash,
@@ -318,13 +384,16 @@ class Repository:
             cur.execute(
                 """
                 INSERT INTO textbook_chapters (
-                    textbook_id, chapter_index, title, start_page, end_page,
-                    metadata, full_text
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    textbook_id, chapter_index, title, chapter_type, start_page, end_page,
+                    page_count, file_path, metadata, full_text
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(textbook_id, chapter_index) DO UPDATE SET
                     title = excluded.title,
+                    chapter_type = excluded.chapter_type,
                     start_page = excluded.start_page,
                     end_page = excluded.end_page,
+                    page_count = excluded.page_count,
+                    file_path = excluded.file_path,
                     metadata = excluded.metadata,
                     full_text = excluded.full_text
                 """,
@@ -332,8 +401,11 @@ class Repository:
                     chapter.textbook_id,
                     chapter.chapter_index,
                     chapter.title,
+                    chapter.chapter_type,
                     chapter.start_page,
                     chapter.end_page,
+                    chapter.page_count,
+                    chapter.file_path,
                     json.dumps(chapter.metadata),
                     chapter.full_text,
                 ),
@@ -368,6 +440,23 @@ class Repository:
             )
             return cur.rowcount
 
+    def get_chapter_by_file_path(self, textbook_id: int, file_path: str) -> Optional[Chapter]:
+        """Return a chapter by its relative file path (directory-type textbooks only)."""
+        cur = self._conn.execute(
+            "SELECT * FROM textbook_chapters WHERE textbook_id = ? AND file_path = ?",
+            (textbook_id, file_path),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return Chapter.from_row(row)
+
+    def delete_chapter_by_id(self, chapter_id: int) -> bool:
+        """Delete a specific chapter by its internal ID. Returns True if found."""
+        with self.transaction() as cur:
+            cur.execute("DELETE FROM textbook_chapters WHERE id = ?", (chapter_id,))
+            return cur.rowcount > 0
+
     def search_textbook_chapters(self, query: SearchQuery) -> list[SearchResult]:
         """Search textbook chapters using a two-phase approach.
 
@@ -395,7 +484,8 @@ class Repository:
         if use_fts:
             sql = f"""
                 SELECT tc.id AS ch_id, tc.textbook_id, tc.chapter_index,
-                       tc.title AS ch_title, tc.start_page, tc.end_page,
+                       tc.title AS ch_title, tc.chapter_type, tc.start_page, tc.end_page,
+                       tc.page_count, tc.file_path,
                        tc.metadata AS ch_metadata, tc.full_text AS ch_full_text,
                        d.id AS doc_id, d.path, d.filename, d.directory, d.extension,
                        d.document_type, d.size, d.mtime, d.content_hash,
@@ -412,7 +502,8 @@ class Repository:
         else:
             sql = f"""
                 SELECT tc.id AS ch_id, tc.textbook_id, tc.chapter_index,
-                       tc.title AS ch_title, tc.start_page, tc.end_page,
+                       tc.title AS ch_title, tc.chapter_type, tc.start_page, tc.end_page,
+                       tc.page_count, tc.file_path,
                        tc.metadata AS ch_metadata, tc.full_text AS ch_full_text,
                        d.id AS doc_id, d.path, d.filename, d.directory, d.extension,
                        d.document_type, d.size, d.mtime, d.content_hash,
@@ -437,8 +528,11 @@ class Repository:
                 "textbook_id": row["textbook_id"],
                 "chapter_index": row["chapter_index"],
                 "title": row["ch_title"],
+                "chapter_type": row["chapter_type"],
                 "start_page": row["start_page"],
                 "end_page": row["end_page"],
+                "page_count": row["page_count"],
+                "file_path": row["file_path"],
                 "metadata": row["ch_metadata"],
                 "full_text": row["ch_full_text"],
             }

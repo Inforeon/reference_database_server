@@ -384,24 +384,39 @@ class PaperDocumentHandler(DocumentHandler):
 
 
 class TextbookDocumentHandler(DocumentHandler):
-    """Handler for textbooks — splits into chapters, stores each independently.
+    """Handler for textbooks — supports file-type (single PDF) and directory-type (chapter-per-file).
 
-    Pipeline:
+    **File-type** (single PDF, ``textbook_variant='file'``):
     1. Extract overall PDF metadata (title, author, etc.)
     2. Upsert parent Document row (document_type="textbook", full_text = rendered TOC)
     3. Detect chapter boundaries (sidecar override > PDF TOC > single-chapter fallback)
     4. Delete any existing chapters for this textbook
     5. For each chapter: extract text slice, upsert Chapter row
+
+    **Directory-type** (chapters as separate files, ``textbook_variant='directory'``):
+    1. Load sidecar from ``<dirname>.meta.json`` inside the directory
+    2. Enumerate first-level files as chapters (alphabetical default order, overridable via sidecar)
+    3. Upsert parent Document row with TOC as full_text
+    4. For each chapter file: extract text + metadata, upsert Chapter row
     """
 
     document_type = "textbook"
 
     def handle(self, filepath: Path) -> Optional[Document]:
         """Run the full textbook indexing pipeline."""
+        self.pre_process(filepath)
+
+        if filepath.is_dir():
+            return self._handle_directory(filepath)
+        else:
+            return self._handle_file(filepath)
+
+    # ── File-type textbook (single PDF) ───────────────────────────
+
+    def _handle_file(self, filepath: Path) -> Optional[Document]:
+        """Handle a single-PDF textbook."""
         if not self._has_extractor(filepath):
             return None
-
-        self.pre_process(filepath)
 
         try:
             stat = filepath.stat()
@@ -410,16 +425,15 @@ class TextbookDocumentHandler(DocumentHandler):
             extracted_meta = self.extract_metadata(filepath)
             sidecar_meta = self._load_sidecar(filepath)
 
-            # Merge user-supplied extra metadata into sidecar metadata
             merged_sidecar = {**sidecar_meta, **self.extra_metadata}
 
-            # Detect chapters
             chapters_info = self._detect_chapters(filepath, sidecar_meta)
 
-            # Build TOC string for the parent document's full_text
             toc_lines = [extracted_meta.get("title", filepath.stem)]
             for ch in chapters_info:
-                toc_lines.append(f"  Ch {ch['index'] + 1}: {ch['title']} (pp. {ch['start_page']}–{ch['end_page']})")
+                toc_lines.append(
+                    f"  Ch {ch['index'] + 1}: {ch['title']} (pp. {ch['start_page']}–{ch['end_page']})"
+                )
             toc_text = "\n".join(toc_lines)
 
             doc = Document(
@@ -428,6 +442,7 @@ class TextbookDocumentHandler(DocumentHandler):
                 directory=str(filepath.parent.resolve()),
                 extension=filepath.suffix.lower().lstrip("."),
                 document_type=self.document_type,
+                textbook_variant="file",
                 size=stat.st_size,
                 mtime=stat.st_mtime,
                 content_hash=content_hash,
@@ -441,17 +456,190 @@ class TextbookDocumentHandler(DocumentHandler):
             doc.id = row_id
 
             if doc.id is not None:
-                # Delete old chapters and insert fresh ones
                 self.repo.delete_chapters(doc.id)
-                self._insert_chapters(filepath, doc.id, chapters_info)
+                self._insert_file_chapters(filepath, doc.id, chapters_info)
 
-            # Persist extra metadata to the sidecar file on disk
             self._save_sidecar(filepath, merged_sidecar)
-
             return doc
         except Exception as e:
             logger.error("Textbook handler failed on %s: %s", filepath, e)
             return None
+
+    # ── Directory-type textbook (chapter-per-file) ────────────────
+
+    def _handle_directory(self, dirpath: Path) -> Optional[Document]:
+        """Handle a directory-based textbook where each file is a chapter."""
+        try:
+            sidecar_meta = self._load_directory_sidecar(dirpath)
+            merged_sidecar = {**sidecar_meta, **self.extra_metadata}
+
+            chapter_files = self._enumerate_chapter_files(dirpath, sidecar_meta)
+
+            if not chapter_files:
+                logger.warning("No indexable files found in textbook directory: %s", dirpath)
+
+            toc_lines = [merged_sidecar.get("title", dirpath.name)]
+            for ch in chapter_files:
+                toc_lines.append(f"  Ch {ch['index'] + 1}: {ch['title']} ({ch['file_path']})")
+            toc_text = "\n".join(toc_lines)
+
+            dir_stat = dirpath.stat()
+            doc = Document(
+                path=str(dirpath.resolve()),
+                filename=dirpath.name,
+                directory=str(dirpath.parent.resolve()),
+                extension="",
+                document_type=self.document_type,
+                textbook_variant="directory",
+                size=dir_stat.st_size,
+                mtime=dir_stat.st_mtime,
+                content_hash="",
+                extracted_metadata={},
+                sidecar_metadata=merged_sidecar,
+                full_text=toc_text,
+            )
+
+            doc = self.post_process(doc)
+            row_id = self.repo.upsert(doc)
+            doc.id = row_id
+
+            if doc.id is not None:
+                self.repo.delete_chapters(doc.id)
+                self._insert_directory_chapters(dirpath, doc.id, chapter_files)
+
+            self._save_directory_sidecar(dirpath, merged_sidecar)
+            return doc
+        except Exception as e:
+            logger.error("Textbook directory handler failed on %s: %s", dirpath, e)
+            return None
+
+    def _load_directory_sidecar(self, dirpath: Path) -> dict[str, Any]:
+        """Load sidecar metadata from ``<dirname>.meta.json`` inside the directory."""
+        sidecar_path = dirpath / f"{dirpath.name}.meta.json"
+        if sidecar_path.is_file():
+            try:
+                with open(sidecar_path, "r") as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, IOError) as e:
+                logger.warning("Failed to load directory sidecar %s: %s", sidecar_path, e)
+        return {}
+
+    def _save_directory_sidecar(self, dirpath: Path, metadata: dict[str, Any]) -> None:
+        """Persist sidecar metadata to ``<dirname>.meta.json`` inside the directory."""
+        sidecar_path = dirpath / f"{dirpath.name}.meta.json"
+        try:
+            with open(sidecar_path, "w") as f:
+                json.dump(metadata, f, indent=2)
+        except IOError as e:
+            logger.warning("Failed to save directory sidecar %s: %s", sidecar_path, e)
+
+    def _enumerate_chapter_files(
+        self, dirpath: Path, sidecar_meta: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """List indexable files at the first level of the directory as chapters.
+
+        Returns a list of dicts with keys: index, title, file_path (relative).
+        Default ordering is alphabetical; sidecar may override via ``chapters`` key.
+        """
+        # Get all first-level files that have an extractor
+        all_files = sorted(
+            [f for f in dirpath.iterdir() if f.is_file()],
+            key=lambda p: p.name,
+        )
+        indexable = [f for f in all_files if self._has_extractor(f)]
+
+        skipped = set(f.name for f in all_files if f not in set(indexable))
+        if skipped:
+            logger.info(
+                "Skipping unsupported files in textbook directory %s: %s",
+                dirpath, ", ".join(sorted(skipped)),
+            )
+
+        # Check if sidecar defines explicit chapter ordering
+        if "chapters" in sidecar_meta and isinstance(sidecar_meta["chapters"], list):
+            chapters = []
+            for i, entry in enumerate(sidecar_meta["chapters"]):
+                fname = entry.get("file", entry.get("filename", ""))
+                title = entry.get("title", fname.replace(".pdf", "").replace("_", " ").title())
+                chapters.append({
+                    "index": entry.get("index", i),
+                    "title": title,
+                    "file_path": fname,
+                })
+            # Only include chapters whose files actually exist
+            existing = {f.name for f in indexable}
+            chapters = [ch for ch in chapters if ch["file_path"] in existing]
+            return chapters
+
+        # Default: alphabetical by filename
+        chapters = []
+        for i, f in enumerate(indexable):
+            title = f.stem.replace("_", " ").replace("-", " ").title()
+            chapters.append({
+                "index": i,
+                "title": title,
+                "file_path": f.name,
+            })
+        return chapters
+
+    def _insert_directory_chapters(
+        self, dirpath: Path, textbook_id: int, chapter_files: list[dict[str, Any]]
+    ) -> None:
+        """Extract text for each chapter file and upsert into the database."""
+        from .models import Chapter
+
+        for ch_info in chapter_files:
+            chapter_path = dirpath / ch_info["file_path"]
+            ext = chapter_path.suffix.lower().lstrip(".")
+            extractor = self._extractors.get(ext)
+
+            if extractor:
+                meta, text = extractor.extract(str(chapter_path))
+            else:
+                meta, text = {}, ""
+
+            page_count = self._get_page_count(chapter_path)
+
+            chapter = Chapter(
+                textbook_id=textbook_id,
+                chapter_index=ch_info["index"],
+                title=ch_info["title"],
+                chapter_type="file",
+                start_page=None,
+                end_page=None,
+                page_count=page_count if page_count else None,
+                file_path=ch_info["file_path"],
+                metadata=meta,
+                full_text=text,
+            )
+            self.repo.upsert_chapter(chapter)
+
+    # ── Legacy file-type helpers (unchanged) ──────────────────────
+
+    def _insert_file_chapters(
+        self, filepath: Path, textbook_id: int, chapters_info: list[dict[str, Any]]
+    ) -> None:
+        """Extract text for each chapter range and upsert into the database."""
+        from .models import Chapter
+
+        for ch_info in chapters_info:
+            full_text = self._extract_pages(
+                filepath, ch_info["start_page"], ch_info["end_page"]
+            )
+            page_count = (ch_info["end_page"] or 0) - (ch_info["start_page"] or 0)
+            chapter = Chapter(
+                textbook_id=textbook_id,
+                chapter_index=ch_info["index"],
+                title=ch_info["title"],
+                chapter_type="range",
+                start_page=ch_info["start_page"],
+                end_page=ch_info["end_page"],
+                page_count=page_count if page_count else None,
+                file_path=None,
+                metadata={},
+                full_text=full_text,
+            )
+            self.repo.upsert_chapter(chapter)
 
     def _detect_chapters(
         self, filepath: Path, sidecar_meta: dict[str, Any]

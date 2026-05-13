@@ -17,6 +17,7 @@ class Document:
     directory: str = ""
     extension: str = ""
     document_type: str = "generic"
+    textbook_variant: Optional[str] = None  # 'file' | 'directory' (textbooks only)
     size: int = 0
     mtime: float = 0.0
     content_hash: str = ""
@@ -41,6 +42,7 @@ class Document:
             extracted_raw = row["extracted_metadata"] if "extracted_metadata" in keys else None
             sidecar_raw = row["sidecar_metadata"] if "sidecar_metadata" in keys else None
             indexed_raw = row["indexed_at"] if "indexed_at" in keys else None
+            variant_raw = row["textbook_variant"] if "textbook_variant" in keys else None
             return cls(
                 id=row["id"] if "id" in keys else None,
                 path=row["path"],
@@ -48,6 +50,7 @@ class Document:
                 directory=row["directory"],
                 extension=row["extension"],
                 document_type=row["document_type"] if "document_type" in keys and row["document_type"] else "generic",
+                textbook_variant=variant_raw if variant_raw else None,
                 size=row["size"] if "size" in keys and row["size"] else 0,
                 mtime=row["mtime"] if "mtime" in keys and row["mtime"] else 0.0,
                 content_hash=row["content_hash"] if "content_hash" in keys and row["content_hash"] else "",
@@ -65,13 +68,14 @@ class Document:
             directory=row[3],
             extension=row[4],
             document_type=row[5] if len(row) > 5 and row[5] else "generic",
-            size=row[6] if len(row) > 6 and row[6] else 0,
-            mtime=row[7] if len(row) > 7 and row[7] else 0.0,
-            content_hash=row[8] if len(row) > 8 and row[8] else "",
-            extracted_metadata=json.loads(row[9]) if len(row) > 9 and row[9] else {},
-            sidecar_metadata=json.loads(row[10]) if len(row) > 10 and row[10] else {},
-            full_text=row[11] if len(row) > 11 and row[11] else "",
-            indexed_at=datetime.fromisoformat(row[12]) if len(row) > 12 and row[12] else None,
+            textbook_variant=row[6] if len(row) > 6 and row[6] else None,
+            size=row[7] if len(row) > 7 and row[7] else 0,
+            mtime=row[8] if len(row) > 8 and row[8] else 0.0,
+            content_hash=row[9] if len(row) > 9 and row[9] else "",
+            extracted_metadata=json.loads(row[10]) if len(row) > 10 and row[10] else {},
+            sidecar_metadata=json.loads(row[11]) if len(row) > 11 and row[11] else {},
+            full_text=row[12] if len(row) > 12 and row[12] else "",
+            indexed_at=datetime.fromisoformat(row[13]) if len(row) > 13 and row[13] else None,
         )
 
 
@@ -83,8 +87,11 @@ class Chapter:
     textbook_id: int = 0
     chapter_index: int = 0
     title: str = ""
-    start_page: int = 1
-    end_page: int = 0
+    chapter_type: Optional[str] = "range"  # 'range' | 'file'
+    start_page: Optional[int] = 1
+    end_page: Optional[int] = 0
+    page_count: Optional[int] = None
+    file_path: Optional[str] = None  # relative path within textbook dir (file-type only)
     metadata: dict[str, Any] = field(default_factory=dict)
     full_text: str = ""
 
@@ -108,8 +115,11 @@ class Chapter:
                 textbook_id=row["textbook_id"] if "textbook_id" in keys else 0,
                 chapter_index=row["chapter_index"] if "chapter_index" in keys else 0,
                 title=row["title"] if "title" in keys and row["title"] else "",
-                start_page=row["start_page"] if "start_page" in keys and row["start_page"] else 1,
-                end_page=row["end_page"] if "end_page" in keys and row["end_page"] else 0,
+                chapter_type=row["chapter_type"] if "chapter_type" in keys and row["chapter_type"] else "range",
+                start_page=row["start_page"] if "start_page" in keys and row["start_page"] else None,
+                end_page=row["end_page"] if "end_page" in keys and row["end_page"] else None,
+                page_count=row["page_count"] if "page_count" in keys and row["page_count"] else None,
+                file_path=row["file_path"] if "file_path" in keys and row["file_path"] else None,
                 metadata=json.loads(meta_raw) if meta_raw else {},
                 full_text=row["full_text"] if "full_text" in keys and row["full_text"] else "",
             )
@@ -120,10 +130,13 @@ class Chapter:
             textbook_id=row[1] if len(row) > 1 else 0,
             chapter_index=row[2] if len(row) > 2 else 0,
             title=row[3] if len(row) > 3 and row[3] else "",
-            start_page=row[4] if len(row) > 4 and row[4] else 1,
-            end_page=row[5] if len(row) > 5 and row[5] else 0,
-            metadata=json.loads(row[6]) if len(row) > 6 and row[6] else {},
-            full_text=row[7] if len(row) > 7 and row[7] else "",
+            chapter_type=row[4] if len(row) > 4 and row[4] else "range",
+            start_page=row[5] if len(row) > 5 and row[5] else None,
+            end_page=row[6] if len(row) > 6 and row[6] else None,
+            page_count=row[7] if len(row) > 7 and row[7] else None,
+            file_path=row[8] if len(row) > 8 and row[8] else None,
+            metadata=json.loads(row[9]) if len(row) > 9 and row[9] else {},
+            full_text=row[10] if len(row) > 10 and row[10] else "",
         )
 
 

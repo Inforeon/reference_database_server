@@ -122,8 +122,11 @@ class ChapterResponse(BaseModel):
     textbook_id: int
     chapter_index: int
     title: str
-    start_page: int
-    end_page: int
+    chapter_type: str = "range"
+    start_page: int | None = None
+    end_page: int | None = None
+    page_count: int | None = None
+    file_path: str | None = None
     metadata: dict[str, Any] = {}
 
 
@@ -133,8 +136,11 @@ class ChapterContentResponse(BaseModel):
     textbook_id: int
     chapter_index: int
     title: str
-    start_page: int
-    end_page: int
+    chapter_type: str = "range"
+    start_page: int | None = None
+    end_page: int | None = None
+    page_count: int | None = None
+    file_path: str | None = None
     metadata: dict[str, Any] = {}
     full_text: str
 
