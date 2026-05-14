@@ -11,8 +11,11 @@ from docsearch.core.repository import Repository
 
 @click.group(name="textbooks")
 def textbooks() -> None:
-    """Manage textbooks (add, upload)."""
+    """Manage textbooks (add, upload, reference)."""
     pass
+
+
+textbooks.add_command(reference)
 
 
 @textbooks.command()
@@ -82,6 +85,63 @@ def upload(ctx: dict, file, name: str | None, directory: str, meta_pairs: tuple[
             click.echo(f"Uploaded & indexed: {doc.path}")
         else:
             click.echo(f"Failed to index uploaded file: {target_path}", err=True)
+    finally:
+        repo.close()
+
+
+@click.command(name="reference")
+@click.option("-t", "--title", required=True, help="Title of the textbook (required).")
+@click.option("-a", "--author", default=None, help="Author string.")
+@click.option("-y", "--year", default=None, help="Year of publication.")
+@click.option("--publisher", default=None, help="Publisher name.")
+@click.option("-e", "--edition", default=None, help="Edition string.")
+@click.option("-u", "--url", default=None, help="URL string.")
+@click.option(
+    "-D", "--path", "filepath", default="",
+    help="Path for grouping (file need not exist yet).",
+)
+@click.option(
+    "-m", "--meta", "meta_pairs",
+    multiple=True,
+    help="Extra metadata as KEY=VALUE (repeatable, JSON values supported).",
+)
+@click.pass_obj
+def reference(ctx: dict, title: str, author: str | None, year: str | None, publisher: str | None,
+              edition: str | None, url: str | None, filepath: str, meta_pairs: tuple[str, ...]) -> None:
+    """Register a metadata-only textbook reference (no file required).
+
+    Creates an index entry with ``source_type='reference'`` from supplied
+    metadata. The ``--path`` option sets a real path for grouping within the
+    database home; the file need not exist. If placed at that path later, a
+    normal ``textbooks add`` will enrich the entry in-place.
+    """
+    config = ctx["config"]
+    repo = Repository(str(config.db_path))
+    try:
+        indexer = Indexer(repo)
+        extra_meta = _parse_meta_pairs(meta_pairs) or {}
+        extra_meta["title"] = title
+        if author:
+            extra_meta["author"] = author
+        if year:
+            extra_meta["year"] = year
+        if publisher:
+            extra_meta["publisher"] = publisher
+        if edition:
+            extra_meta["edition"] = edition
+        if url:
+            extra_meta["url"] = url
+
+        # Resolve path relative to database home
+        fp = filepath or ""
+        if fp and not Path(fp).is_absolute():
+            fp = str(config.home / fp)
+
+        doc = indexer.add_reference(fp, document_type="textbook", extra_metadata=extra_meta or None)
+        if doc:
+            click.echo(f"Reference registered: {doc.path} (type={doc.document_type})")
+        else:
+            click.echo("Failed to create reference.", err=True)
     finally:
         repo.close()
 

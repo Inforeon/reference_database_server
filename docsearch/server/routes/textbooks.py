@@ -13,6 +13,7 @@ from docsearch.core.repository import Repository
 from docsearch.extractors import load_extractors
 from docsearch.server.dependencies import get_config
 from docsearch.server.schemas import (
+    AddTextbookReferenceRequest,
     AddTextbookRequest,
     ChapterContentResponse,
     ChapterResponse,
@@ -20,6 +21,57 @@ from docsearch.server.schemas import (
 )
 
 router = APIRouter(prefix="/api/documents", tags=["textbooks"])
+
+
+@router.post("/textbooks/reference", response_model=TextbookUploadResponse)
+async def add_textbook_reference(
+    body: AddTextbookReferenceRequest,
+    config = Depends(get_config),
+) -> TextbookUploadResponse:
+    """Register a textbook reference (metadata-only, no associated file).
+
+    Creates a document with ``source_type='reference'`` and ``document_type='textbook'``
+    containing only the supplied metadata. The ``filepath`` is used for grouping within
+    the database home; if a file is later placed at that path, a normal add_file upsert
+    will enrich the entry.
+    """
+    meta: dict[str, Any] = dict(body.extra_metadata or {})
+    if body.title:
+        meta["title"] = body.title
+    if body.author:
+        meta["author"] = body.author
+    if body.year:
+        meta["year"] = body.year
+    if body.publisher:
+        meta["publisher"] = body.publisher
+    if body.edition:
+        meta["edition"] = body.edition
+    if body.url:
+        meta["url"] = body.url
+
+    # Resolve filepath relative to database home
+    filepath = body.filepath or ""
+    if not Path(filepath).is_absolute():
+        filepath = str(config.home / filepath)
+
+    repo = Repository(str(config.db_path))
+    try:
+        indexer = Indexer(repo)
+        doc = indexer.add_reference(
+            filepath,
+            document_type="textbook",
+            extra_metadata=meta or None,
+        )
+        if not doc:
+            raise HTTPException(status_code=500, detail="Failed to create reference.")
+        indexed = repo.get(doc.path)
+        return TextbookUploadResponse(
+            id=indexed.id,
+            path=indexed.path,
+            filename=indexed.filename,
+        )
+    finally:
+        repo.close()
 
 
 @router.post("/textbooks/add", response_model=TextbookUploadResponse)

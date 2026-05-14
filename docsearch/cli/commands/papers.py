@@ -11,7 +11,7 @@ from docsearch.core.repository import Repository
 
 @click.group(name="papers")
 def papers() -> None:
-    """Manage research papers (add, upload, export bibtex)."""
+    """Manage research papers (add, upload, reference, export bibtex)."""
     pass
 
 
@@ -99,6 +99,72 @@ def upload(ctx: dict, file, name: str | None, directory: str, doi: str | None, s
         repo.close()
 
 
+@click.command(name="reference")
+@click.option("-t", "--title", required=True, help="Title of the reference (required).")
+@click.option("-a", "--author", default=None, help="Author string.")
+@click.option("-y", "--year", default=None, help="Year of publication.")
+@click.option("-j", "--journal", default=None, help="Journal name.")
+@click.option("-b", "--booktitle", default=None, help="Book/proceedings name.")
+@click.option("-d", "--doi", default=None, help="DOI string.")
+@click.option("-u", "--url", default=None, help="URL string.")
+@click.option("-k", "--citation-key", default=None, help="BibTeX citation key.")
+@click.option(
+    "-p", "--path", "filepath", default="",
+    help="Path for grouping (file need not exist yet).",
+)
+@click.option(
+    "-m", "--meta", "meta_pairs",
+    multiple=True,
+    help="Extra metadata as KEY=VALUE (repeatable, JSON values supported).",
+)
+@click.pass_obj
+def reference(ctx: dict, title: str, author: str | None, year: str | None, journal: str | None,
+              booktitle: str | None, doi: str | None, url: str | None, citation_key: str | None,
+              filepath: str, meta_pairs: tuple[str, ...]) -> None:
+    """Register a metadata-only paper reference (no file required).
+
+    Creates an index entry with ``source_type='reference'`` from supplied
+    metadata. BibTeX is auto-generated if not provided via ``-m bibtex=...``.
+
+    The ``--path`` option sets a real path for grouping within the database
+    home; the file need not exist. If placed at that path later, a normal
+    ``papers add`` will enrich the entry in-place.
+    """
+    config = ctx["config"]
+    repo = Repository(str(config.db_path))
+    try:
+        indexer = Indexer(repo)
+        extra_meta = _parse_meta_pairs(meta_pairs) or {}
+        extra_meta["title"] = title
+        if author:
+            extra_meta["author"] = author
+        if year:
+            extra_meta["year"] = year
+        if journal:
+            extra_meta["journal"] = journal
+        if booktitle:
+            extra_meta["booktitle"] = booktitle
+        if doi:
+            extra_meta["doi"] = doi
+        if url:
+            extra_meta["url"] = url
+        if citation_key:
+            extra_meta["citation_key"] = citation_key
+
+        # Resolve path relative to database home
+        fp = filepath or ""
+        if fp and not Path(fp).is_absolute():
+            fp = str(config.home / fp)
+
+        doc = indexer.add_reference(fp, document_type="paper", extra_metadata=extra_meta or None)
+        if doc:
+            click.echo(f"Reference registered: {doc.path} (type={doc.document_type})")
+        else:
+            click.echo("Failed to create reference.", err=True)
+    finally:
+        repo.close()
+
+
 # ── helpers ────────────────────────────────────────────────────────
 
 def _parse_meta_pairs(pairs: tuple[str, ...]) -> dict:
@@ -115,3 +181,7 @@ def _parse_meta_pairs(pairs: tuple[str, ...]) -> dict:
             pass
         meta[key] = value
     return meta if meta else None
+
+
+# Register the reference command with the papers group (defined above via @click.command)
+papers.add_command(reference)

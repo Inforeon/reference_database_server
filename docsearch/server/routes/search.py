@@ -34,10 +34,9 @@ async def search(
 ) -> SearchResponse:
     """Search indexed documents and textbook chapters.
 
-    Returns separated result groups: ``documents`` for generic/paper results,
-    ``chapters`` for textbook chapter results. Use ``document_types`` to filter
-    which document types participate (e.g. ``document_types=textbook`` for
-    chapter-only search).
+    Returns separated result groups: ``documents`` for generic/paper/textbook
+    document-level results, ``chapters`` for textbook chapter results.
+    Use ``document_types`` to filter which document types participate.
     """
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
     type_list = [t.strip() for t in document_types.split(",") if t.strip()] if document_types else []
@@ -57,22 +56,26 @@ async def search(
 
     repo = Repository(str(config.db_path))
     try:
-        # Document-level search (excludes textbooks since their text is in chapters)
+        # ── Phase 1: Non-textbook documents (generic, paper) ──────
         doc_results: list[SearchResultResponse] = []
-        if sq.includes_type("generic") or sq.includes_type("paper"):
+        non_textbook_types = ["generic", "paper"]
+        if any(sq.includes_type(t) for t in non_textbook_types):
             filtered_sq = SearchQuery(**sq.__dict__)
-            # Exclude textbook type from document search
-            exclude_types = ["textbook"]
-            if filtered_sq.document_types:
-                filtered_sq.document_types = [t for t in filtered_sq.document_types if t not in exclude_types]
-            elif exclude_types:
-                # If no explicit filter, just skip textbook type
-                filtered_sq.document_types = ["generic", "paper"]
-
+            filtered_sq.document_types = [
+                t for t in non_textbook_types if sq.includes_type(t)
+            ] or non_textbook_types
             raw_docs = repo.search(filtered_sq)
             doc_results = [_to_search_response(r) for r in raw_docs]
 
-        # Chapter-level search
+        # ── Phase 2: Textbook documents (title/metadata level) ──────
+        if sq.includes_type("textbook"):
+            tb_sq = SearchQuery(**sq.__dict__)
+            tb_sq.document_types = ["textbook"]
+            raw_tb_docs = repo.search(tb_sq)
+            for r in raw_tb_docs:
+                doc_results.append(_to_search_response(r))
+
+        # ── Phase 3: Textbook chapters (full_text + title level) ────
         chap_results: list[ChapterSearchResultResponse] = []
         if sq.includes_type("textbook"):
             raw_chaps = repo.search_textbook_chapters(sq)

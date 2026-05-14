@@ -11,14 +11,67 @@ from docsearch.core.indexer import Indexer
 from docsearch.core.repository import Repository
 from docsearch.server.dependencies import get_config
 from docsearch.server.schemas import (
+    AddGenericReferenceRequest,
     ContentResponse,
     DocumentResponse,
     MetaPatch,
     MoveDocumentRequest,
     MoveDocumentResponse,
+    UploadResponse,
 )
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
+
+
+@router.post("/reference", response_model=UploadResponse)
+async def add_generic_reference(
+    body: AddGenericReferenceRequest,
+    config = Depends(get_config),
+) -> UploadResponse:
+    """Register a generic document reference (metadata-only, no associated file).
+
+    Creates a document with ``source_type='reference'`` and ``document_type='generic'``
+    containing only the supplied metadata. The ``filepath`` is used for grouping within
+    the database home; if a file is later placed at that path, a normal add_file upsert
+    will enrich the entry.
+    """
+    from typing import Any
+
+    meta: dict[str, Any] = dict(body.extra_metadata or {})
+    if body.title:
+        meta["title"] = body.title
+    if body.author:
+        meta["author"] = body.author
+    if body.subject:
+        meta["subject"] = body.subject
+    if body.keywords:
+        meta["keywords"] = body.keywords
+    if body.url:
+        meta["url"] = body.url
+
+    # Resolve filepath relative to database home
+    filepath = body.filepath or ""
+    if not Path(filepath).is_absolute():
+        filepath = str(config.home / filepath)
+
+    repo = Repository(str(config.db_path))
+    try:
+        indexer = Indexer(repo)
+        doc = indexer.add_reference(
+            filepath,
+            document_type="generic",
+            extra_metadata=meta or None,
+        )
+        if not doc:
+            raise HTTPException(status_code=500, detail="Failed to create reference.")
+        indexed = repo.get(doc.path)
+        return UploadResponse(
+            id=indexed.id,
+            path=indexed.path,
+            filename=indexed.filename,
+        )
+    finally:
+        repo.close()
 
 
 @router.get("/{doc_id}", response_model=DocumentResponse)

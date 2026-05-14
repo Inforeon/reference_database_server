@@ -108,11 +108,17 @@ class DocumentHandler:
 
     # ── public entry point ──────────────────────────────────────
 
-    def handle(self, filepath: Path) -> Optional[Document]:
+    def handle(self, filepath: Path, reference: bool = False) -> Optional[Document]:
         """Run the full indexing pipeline for a single file.
+
+        When ``reference=True``, skip all file I/O and create the Document
+        from ``extra_metadata`` alone (metadata-only entry).
 
         Returns the indexed Document, or None on failure.
         """
+        if reference:
+            return self._handle_reference(filepath)
+
         if not self._has_extractor(filepath):
             return None
 
@@ -154,11 +160,76 @@ class DocumentHandler:
             logger.error("Handler failed on %s: %s", filepath, e)
             return None
 
+    def _handle_reference(self, filepath: Path) -> Optional[Document]:
+        """Handle a metadata-only reference (no file on-disk file).
+
+        Subclasses may override to add type-specific behaviour (e.g. papers
+        auto-generate BibTeX). The ``filepath`` is used only for grouping
+        (directory/filename derivation); it is never read.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support references")
+
 
 class GenericDocumentHandler(DocumentHandler):
     """Default handler — standard extract & index."""
 
     document_type = "generic"
+
+    def _handle_reference(self, filepath: Path) -> Optional[Document]:
+        """Handle a metadata-only generic reference (no file on disk)."""
+        try:
+            merged_sidecar = dict(self.extra_metadata)
+
+            # Derive path components
+            fp = filepath.resolve()
+            if fp.name and not fp.is_dir():
+                filename = fp.name
+                directory = str(fp.parent)
+                doc_path = str(fp)
+            else:
+                title = merged_sidecar.get("title", "untitled")
+                safe_key = re.sub(r"[^a-zA-Z0-9_-]", "_", title)
+                filename = f"{safe_key}.txt"
+                directory = str(fp)
+                doc_path = str(fp / filename)
+
+            # Build searchable full_text from metadata fields
+            searchable_parts = []
+            if merged_sidecar.get("title"):
+                searchable_parts.append(merged_sidecar["title"])
+            if merged_sidecar.get("author"):
+                searchable_parts.append(str(merged_sidecar["author"]))
+            if merged_sidecar.get("subject"):
+                searchable_parts.append(merged_sidecar["subject"])
+            if merged_sidecar.get("keywords"):
+                kw = merged_sidecar["keywords"]
+                if isinstance(kw, list):
+                    searchable_parts.extend(str(k) for k in kw)
+                else:
+                    searchable_parts.append(str(kw))
+            full_text = " ".join(searchable_parts)
+
+            doc = Document(
+                path=doc_path,
+                filename=filename,
+                directory=directory,
+                extension="txt",
+                document_type=self.document_type,
+                source_type="reference",
+                size=0,
+                mtime=0.0,
+                content_hash="",
+                extracted_metadata={},
+                sidecar_metadata=merged_sidecar,
+                full_text=full_text,
+            )
+
+            doc = self.post_process(doc)
+            self.repo.upsert(doc)
+            return doc
+        except Exception as e:
+            logger.error("Generic reference handler failed: %s", e)
+            return None
 
 
 # ── BibTeX helpers ──────────────────────────────────────────────
@@ -382,6 +453,90 @@ class PaperDocumentHandler(DocumentHandler):
             doc.sidecar_metadata["bibtex"] = bibtex
         return doc
 
+    def _handle_reference(self, filepath: Path) -> Optional[Document]:
+        """Handle a metadata-only paper reference (no PDF on disk).
+
+        Skips all file-based processing (pdf2bib, DOI embedding, title
+        validation). Uses ``filepath`` as a real path for identification and
+        grouping — the file simply does not exist yet. Creates the Document
+        from ``extra_metadata`` alone with auto-generated BibTeX.
+        """
+        try:
+            merged_sidecar = dict(self.extra_metadata)
+
+            # Auto-generate bibtex if not provided
+            if not merged_sidecar.get("bibtex"):
+                bibtex = _generate_bibtex_from_metadata(merged_sidecar)
+                merged_sidecar["bibtex"] = bibtex
+
+            # Derive citation key (stored in sidecar for BibTeX identity)
+            title = merged_sidecar.get("title", "untitled")
+            year = str(merged_sidecar.get("year", "0000"))
+            author = merged_sidecar.get("author", merged_sidecar.get("authors_bib", "unknown"))
+            if isinstance(author, list):
+                if isinstance(author[0], dict):
+                    author = str(author[0].get("family", "unknown"))
+                else:
+                    author = str(author[0])
+            else:
+                author = str(author)
+
+            citation_key = merged_sidecar.get("citation_key", f"{author}{year}")
+            safe_key = re.sub(r"[^a-zA-Z0-9_-]", "_", citation_key)
+            if not merged_sidecar.get("citation_key"):
+                merged_sidecar["citation_key"] = citation_key
+
+            # Build searchable full_text from metadata fields
+            searchable_parts = []
+            if merged_sidecar.get("title"):
+                searchable_parts.append(merged_sidecar["title"])
+            if merged_sidecar.get("author"):
+                searchable_parts.append(str(merged_sidecar["author"]))
+            if merged_sidecar.get("journal"):
+                searchable_parts.append(merged_sidecar["journal"])
+            if merged_sidecar.get("booktitle"):
+                searchable_parts.append(merged_sidecar["booktitle"])
+            if merged_sidecar.get("abstract"):
+                searchable_parts.append(merged_sidecar["abstract"])
+            full_text = " ".join(searchable_parts)
+
+            # Derive path components. If filepath has no meaningful name
+            # (e.g. empty string resolving to cwd), use citation key.
+            fp = filepath.resolve()
+            if fp.name and not fp.is_dir():
+                filename = fp.name
+                directory = str(fp.parent)
+                doc_path = str(fp)
+            else:
+                # No meaningful filename — fall back to citation key within
+                # the resolved directory.
+                filename = f"{safe_key}.bib"
+                directory = str(fp)
+                doc_path = str(fp / filename)
+
+            doc = Document(
+                path=doc_path,
+                filename=filename,
+                directory=directory,
+                extension="bib",
+                document_type=self.document_type,
+                source_type="reference",
+                size=0,
+                mtime=0.0,
+                content_hash="",
+                extracted_metadata={},
+                sidecar_metadata=merged_sidecar,
+                full_text=full_text,
+            )
+
+            doc = self.post_process(doc)
+            self.repo.upsert(doc)
+
+            return doc
+        except Exception as e:
+            logger.error("Paper reference handler failed: %s", e)
+            return None
+
 
 class TextbookDocumentHandler(DocumentHandler):
     """Handler for textbooks — supports file-type (single PDF) and directory-type (chapter-per-file).
@@ -402,8 +557,10 @@ class TextbookDocumentHandler(DocumentHandler):
 
     document_type = "textbook"
 
-    def handle(self, filepath: Path) -> Optional[Document]:
+    def handle(self, filepath: Path, reference: bool = False) -> Optional[Document]:
         """Run the full textbook indexing pipeline."""
+        if reference:
+            return self._handle_reference(filepath)
         self.pre_process(filepath)
 
         if filepath.is_dir():
@@ -751,53 +908,23 @@ class TextbookDocumentHandler(DocumentHandler):
             )
             self.repo.upsert_chapter(chapter)
 
-
-# ── registry ────────────────────────────────────────────────────
-
-class ReferenceDocumentHandler(DocumentHandler):
-    """Handler for reference entries — metadata-only documents without an associated file.
-
-    Creates a Document row with ``source_type='reference'`` containing only
-    user-supplied metadata (e.g. BibTeX citation, title, authors). No file
-    extraction is performed. The ``path`` is a synthetic URI to ensure
-    uniqueness in the index.
-    """
-
-    document_type = "paper"
-
-    def handle(self, filepath: Path) -> Optional[Document]:
-        """Create a reference document from extra_metadata alone.
-
-        The ``filepath`` argument is unused; all data comes from
-        ``self.extra_metadata``. A synthetic path is generated from the
-        citation key or title to guarantee uniqueness.
-        """
+    def _handle_reference(self, filepath: Path) -> Optional[Document]:
+        """Handle a metadata-only textbook reference (no file on disk)."""
         try:
-            # Build metadata from extras
             merged_sidecar = dict(self.extra_metadata)
 
-            # Generate bibtex if not provided
-            if not merged_sidecar.get("bibtex"):
-                bibtex = _generate_bibtex_from_metadata(merged_sidecar)
-                merged_sidecar["bibtex"] = bibtex
-
-            # Derive citation key for synthetic path
-            title = merged_sidecar.get("title", "untitled")
-            year = str(merged_sidecar.get("year", "0000"))
-            author = merged_sidecar.get("author", merged_sidecar.get("authors_bib", "unknown"))
-            if isinstance(author, list):
-                # Use first author family name
-                if isinstance(author[0], dict):
-                    author = str(author[0].get("family", "unknown"))
-                else:
-                    author = str(author[0])
+            # Derive path components
+            fp = filepath.resolve()
+            if fp.name and not fp.is_dir():
+                filename = fp.name
+                directory = str(fp.parent)
+                doc_path = str(fp)
             else:
-                author = str(author)
-
-            citation_key = merged_sidecar.get("citation_key", f"{author}{year}")
-            # Sanitize for use as path component
-            safe_key = re.sub(r"[^a-zA-Z0-9_-]", "_", citation_key)
-            synthetic_path = f"ref://{safe_key}"
+                title = merged_sidecar.get("title", "untitled")
+                safe_key = re.sub(r"[^a-zA-Z0-9_-]", "_", title)
+                filename = f"{safe_key}.txt"
+                directory = str(fp)
+                doc_path = str(fp / filename)
 
             # Build searchable full_text from metadata fields
             searchable_parts = []
@@ -805,19 +932,17 @@ class ReferenceDocumentHandler(DocumentHandler):
                 searchable_parts.append(merged_sidecar["title"])
             if merged_sidecar.get("author"):
                 searchable_parts.append(str(merged_sidecar["author"]))
-            if merged_sidecar.get("journal"):
-                searchable_parts.append(merged_sidecar["journal"])
-            if merged_sidecar.get("booktitle"):
-                searchable_parts.append(merged_sidecar["booktitle"])
-            if merged_sidecar.get("abstract"):
-                searchable_parts.append(merged_sidecar["abstract"])
+            if merged_sidecar.get("publisher"):
+                searchable_parts.append(merged_sidecar["publisher"])
+            if merged_sidecar.get("edition"):
+                searchable_parts.append(merged_sidecar["edition"])
             full_text = " ".join(searchable_parts)
 
             doc = Document(
-                path=synthetic_path,
-                filename=f"{safe_key}.bib",
-                directory="",
-                extension="bib",
+                path=doc_path,
+                filename=filename,
+                directory=directory,
+                extension="txt",
                 document_type=self.document_type,
                 source_type="reference",
                 size=0,
@@ -830,18 +955,18 @@ class ReferenceDocumentHandler(DocumentHandler):
 
             doc = self.post_process(doc)
             self.repo.upsert(doc)
-
             return doc
         except Exception as e:
-            logger.error("Reference handler failed: %s", e)
+            logger.error("Textbook reference handler failed: %s", e)
             return None
 
+
+# ── registry ────────────────────────────────────────────────────
 
 _HANDLER_MAP: dict[str, type[DocumentHandler]] = {
     "generic": GenericDocumentHandler,
     "paper": PaperDocumentHandler,
     "textbook": TextbookDocumentHandler,
-    "reference": ReferenceDocumentHandler,
 }
 
 

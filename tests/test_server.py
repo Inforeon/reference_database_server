@@ -875,8 +875,8 @@ class TestDirectoryTextbookEndpoints:
         return resp.json()["id"]
 
 
-class TestReferenceEndpoints:
-    """Tests for reference (metadata-only) document entries."""
+class TestPaperReferenceEndpoints:
+    """Tests for paper reference (metadata-only) document entries."""
 
     def test_add_reference_basic(self, client, db_home: str):
         """POST /api/documents/papers/reference creates a metadata-only paper."""
@@ -956,15 +956,22 @@ class TestReferenceEndpoints:
         assert resp.status_code == 422
 
     def test_add_reference_with_citation_key(self, client, db_home: str):
-        """Custom citation_key determines the synthetic path."""
+        """Custom citation_key determines the filename when no filepath given."""
         resp = client.post(
             "/api/documents/papers/reference",
             json={"title": "Paper", "citation_key": "mykey2024"},
         )
         assert resp.status_code == 200
         data = resp.json()
-        assert "mykey2024" in data["path"]
         assert data["filename"] == "mykey2024.bib"
+        # Path is a real path under db_home (not a synthetic ref:// URI)
+        assert db_home in data["path"]
+
+        # Verify citation_key is stored in sidecar metadata
+        doc_id = data["id"]
+        meta_resp = client.get(f"/api/documents/{doc_id}/meta")
+        assert meta_resp.status_code == 200
+        assert meta_resp.json()["citation_key"] == "mykey2024"
 
     def test_add_reference_extra_metadata(self, client, db_home: str):
         """Extra metadata fields are preserved."""
@@ -1056,3 +1063,129 @@ class TestReferenceEndpoints:
         # Verify updated title
         meta_resp = client.get(f"/api/documents/{doc_id}/meta")
         assert meta_resp.json()["title"] == "Updated Title"
+
+
+class TestGenericReferenceEndpoints:
+    """Tests for generic document references (metadata-only)."""
+
+    def test_add_generic_reference_basic(self, client, db_home: str):
+        """POST /api/documents/reference creates a metadata-only generic doc."""
+        resp = client.post(
+            "/api/documents/reference",
+            json={
+                "title": "Meeting Notes Q1",
+                "author": "Team Alpha",
+                "subject": "Quarterly review notes",
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["id"] is not None
+
+        # Verify it's stored as a generic reference
+        doc_resp = client.get(f"/api/documents/{data['id']}")
+        assert doc_resp.status_code == 200
+        doc_data = doc_resp.json()
+        assert doc_data["document_type"] == "generic"
+        assert doc_data["source_type"] == "reference"
+
+    def test_add_generic_reference_with_keywords(self, client, db_home: str):
+        """Generic reference with keywords stores them in metadata."""
+        resp = client.post(
+            "/api/documents/reference",
+            json={
+                "title": "Design Doc",
+                "keywords": ["architecture", "design"],
+            },
+        )
+        assert resp.status_code == 200
+
+        doc_id = resp.json()["id"]
+        meta_resp = client.get(f"/api/documents/{doc_id}/meta")
+        assert meta_resp.status_code == 200
+        assert meta_resp.json()["keywords"] == ["architecture", "design"]
+
+    def test_generic_reference_has_searchable_content(self, client, db_home: str):
+        """Generic references have searchable content derived from metadata."""
+        client.post(
+            "/api/documents/reference",
+            json={"title": "Important Design Decision", "subject": "API architecture"},
+        )
+
+        resp = client.get("/api/search?q=Important+Design")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["documents"]["results"]) >= 1
+        hit = data["documents"]["results"][0]
+        assert hit["document"]["source_type"] == "reference"
+        assert hit["document"]["document_type"] == "generic"
+
+
+class TestTextbookReferenceEndpoints:
+    """Tests for textbook references (metadata-only)."""
+
+    def test_add_textbook_reference_basic(self, client, db_home: str):
+        """POST /api/documents/textbooks/reference creates a metadata-only textbook."""
+        resp = client.post(
+            "/api/documents/textbooks/reference",
+            json={
+                "title": "Introduction to Algorithms",
+                "author": "Cormen et al.",
+                "year": "2009",
+                "publisher": "MIT Press",
+                "edition": "3rd",
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["id"] is not None
+
+        # Verify it's stored as a textbook reference
+        doc_resp = client.get(f"/api/documents/{data['id']}")
+        assert doc_resp.status_code == 200
+        doc_data = doc_resp.json()
+        assert doc_data["document_type"] == "textbook"
+        assert doc_data["source_type"] == "reference"
+
+    def test_add_textbook_reference_stores_metadata(self, client, db_home: str):
+        """Textbook reference preserves all supplied fields."""
+        resp = client.post(
+            "/api/documents/textbooks/reference",
+            json={
+                "title": "Deep Learning",
+                "author": "Goodfellow et al.",
+                "publisher": "MIT Press",
+                "edition": "1st",
+            },
+        )
+        assert resp.status_code == 200
+
+        doc_id = resp.json()["id"]
+        meta_resp = client.get(f"/api/documents/{doc_id}/meta")
+        assert meta_resp.status_code == 200
+        meta = meta_resp.json()
+        assert meta["publisher"] == "MIT Press"
+        assert meta["edition"] == "1st"
+
+    def test_textbook_reference_requires_title(self, client, db_home: str):
+        """Textbook reference without title returns 422 validation error."""
+        resp = client.post(
+            "/api/documents/textbooks/reference",
+            json={"author": "Someone"},
+        )
+        assert resp.status_code == 422
+
+    def test_textbook_reference_has_searchable_content(self, client, db_home: str):
+        """Textbook references are searchable by metadata."""
+        client.post(
+            "/api/documents/textbooks/reference",
+            json={"title": "Neural Networks and Deep Learning", "author": "Goodfellow"},
+        )
+
+        resp = client.get("/api/search?q=Neural+Networks")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["documents"]["results"]) >= 1
+        hit = data["documents"]["results"][0]
+        assert hit["document"]["source_type"] == "reference"
+        assert hit["document"]["document_type"] == "textbook"

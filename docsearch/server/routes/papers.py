@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from docsearch.core.indexer import Indexer
 from docsearch.core.repository import Repository
 from docsearch.server.dependencies import get_config
-from docsearch.server.schemas import AddPaperRequest, AddReferenceRequest, PaperUploadResponse
+from docsearch.server.schemas import AddPaperRequest, AddPaperReferenceRequest, PaperUploadResponse
 
 router = APIRouter(prefix="/api/documents/papers", tags=["papers"])
 
@@ -119,13 +119,15 @@ async def upload_paper(
 
 @router.post("/reference", response_model=PaperUploadResponse)
 async def add_reference(
-    body: AddReferenceRequest,
+    body: AddPaperReferenceRequest,
     config = Depends(get_config),
 ) -> PaperUploadResponse:
-    """Register a reference entry (metadata-only, no associated file).
+    """Register a paper reference entry (metadata-only, no associated file).
 
-    Creates a paper-type document with ``source_type='reference'`` containing
-    only the supplied metadata. BibTeX is auto-generated if not provided.
+    Creates a document with ``source_type='reference'`` containing only the
+    supplied metadata. The ``filepath`` is used for grouping within the
+    database home; if a file is later placed at that path, a normal add_file
+    upsert will enrich the entry. BibTeX is auto-generated if not provided.
     """
     meta: dict[str, Any] = dict(body.extra_metadata or {})
     if body.title:
@@ -147,12 +149,17 @@ async def add_reference(
     if body.citation_key:
         meta["citation_key"] = body.citation_key
 
+    # Resolve filepath relative to database home
+    filepath = body.filepath or ""
+    if not Path(filepath).is_absolute():
+        filepath = str(config.home / filepath)
+
     repo = Repository(str(config.db_path))
     try:
         indexer = Indexer(repo)
-        doc = indexer.add_file(
-            "",  # filepath ignored for references
-            document_type="reference",
+        doc = indexer.add_reference(
+            filepath,
+            document_type="paper",
             extra_metadata=meta or None,
         )
         if not doc:

@@ -44,15 +44,7 @@ class Indexer:
 
         ``skip_bib`` skips pdf2bib processing for papers (generates bibtex
         from available metadata instead).
-
-        For ``document_type="reference"``, ``filepath`` is ignored and the
-        entry is created from ``extra_metadata`` alone.
         """
-        # Reference type doesn't require a file
-        if document_type == "reference":
-            handler = get_handler("reference", self.repo, extra_metadata=extra_metadata, skip_bib=skip_bib)
-            return handler.handle(Path("."))
-
         p = Path(filepath).resolve()
         # Allow directories for textbook type (chapter-per-file variant)
         if document_type == "textbook":
@@ -63,6 +55,35 @@ class Indexer:
 
         handler = get_handler(document_type, self.repo, extra_metadata=extra_metadata, skip_bib=skip_bib)
         return handler.handle(p)
+
+    def add_reference(
+        self,
+        filepath: str | Path,
+        document_type: str = "paper",
+        extra_metadata: dict[str, Any] | None = None,
+        skip_bib: bool = False,
+    ) -> Optional[Document]:
+        """Index a metadata-only reference (no file required).
+
+        ``filepath`` is a real path used for identification and grouping within
+        the database home. The file need not exist; if it is later placed at
+        that path, a normal ``add_file`` upsert will enrich the entry.
+
+        ``document_type`` selects the handler (e.g. ``"paper"``). Defaults to
+        ``"paper"`` since references are most commonly bibliographic entries.
+
+        ``extra_metadata`` supplies all metadata for the reference (title,
+        author, year, journal, doi, etc.). At minimum a ``title`` is expected.
+
+        ``skip_bib`` has no effect for references (BibTeX is always generated
+        from metadata when not provided).
+        """
+        p = Path(filepath).resolve()
+        # Ensure parent directories exist so the path resolves cleanly
+        p.parent.mkdir(parents=True, exist_ok=True)
+
+        handler = get_handler(document_type, self.repo, extra_metadata=extra_metadata, skip_bib=skip_bib)
+        return handler.handle(p, reference=True)
 
     def remove_file(self, filepath: str | Path) -> bool:
         """Remove a single file from the index."""

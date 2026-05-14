@@ -53,9 +53,12 @@ class AddPaperRequest(BaseModel):
     extra_metadata: dict[str, Any] = {}
 
 
-class AddReferenceRequest(BaseModel):
-    """Request to register a reference (metadata-only, no file)."""
+# ── Paper-specific requests ──────────────────────────────────────
+
+class AddPaperReferenceRequest(BaseModel):
+    """Request to register a paper reference (metadata-only, no file)."""
     title: str
+    filepath: str = ""  # Real path for grouping; file need not exist yet
     author: str | None = None
     year: str | None = None
     journal: str | None = None
@@ -67,11 +70,36 @@ class AddReferenceRequest(BaseModel):
     extra_metadata: dict[str, Any] = {}
 
 
+# ── Generic reference requests ───────────────────────────────────
+
+class AddGenericReferenceRequest(BaseModel):
+    """Request to register a generic document reference (metadata-only, no file)."""
+    title: str
+    filepath: str = ""  # Real path for grouping; file need not exist yet
+    author: str | None = None
+    subject: str | None = None       # subject/description
+    keywords: list[str] | None = None
+    url: str | None = None
+    extra_metadata: dict[str, Any] = {}
+
+
 # ── Textbook-specific requests ───────────────────────────────────
 
 class AddTextbookRequest(BaseModel):
     """Request to add a textbook to the index."""
     filepath: str
+    extra_metadata: dict[str, Any] = {}
+
+
+class AddTextbookReferenceRequest(BaseModel):
+    """Request to register a textbook reference (metadata-only, no file)."""
+    title: str
+    filepath: str = ""  # Real path for grouping; file need not exist yet
+    author: str | None = None
+    year: str | None = None
+    publisher: str | None = None
+    edition: str | None = None
+    url: str | None = None
     extra_metadata: dict[str, Any] = {}
 
 
