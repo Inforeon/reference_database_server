@@ -20,10 +20,10 @@ from docsearch.server.schemas import (
     TextbookUploadResponse,
 )
 
-router = APIRouter(prefix="/api/documents", tags=["textbooks"])
+router = APIRouter(prefix="/api/documents/textbooks", tags=["textbooks"])
 
 
-@router.post("/textbooks/reference", response_model=TextbookUploadResponse)
+@router.post("/reference", response_model=TextbookUploadResponse)
 async def add_textbook_reference(
     body: AddTextbookReferenceRequest,
     config = Depends(get_config),
@@ -74,7 +74,7 @@ async def add_textbook_reference(
         repo.close()
 
 
-@router.post("/textbooks/add", response_model=TextbookUploadResponse)
+@router.post("/add", response_model=TextbookUploadResponse)
 async def add_textbook(
     body: AddTextbookRequest,
     config = Depends(get_config),
@@ -104,7 +104,7 @@ async def add_textbook(
         repo.close()
 
 
-@router.post("/textbooks/upload", response_model=TextbookUploadResponse)
+@router.post("/upload", response_model=TextbookUploadResponse)
 async def upload_textbook(
     directory: str = "",
     filename: str | None = None,

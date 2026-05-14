@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from docsearch.core.handlers import _generate_bibtex_from_metadata
@@ -64,6 +65,61 @@ async def add_generic_reference(
         )
         if not doc:
             raise HTTPException(status_code=500, detail="Failed to create reference.")
+        indexed = repo.get(doc.path)
+        return UploadResponse(
+            id=indexed.id,
+            path=indexed.path,
+            filename=indexed.filename,
+        )
+    finally:
+        repo.close()
+
+
+@router.post("/upload", response_model=UploadResponse)
+async def upload_file(
+    directory: str = "",
+    filename: str | None = None,
+    extra_metadata: str | None = None,
+    file: UploadFile = File(...),
+    config = Depends(get_config),
+) -> UploadResponse:
+    """Upload a generic document and index it automatically.
+
+    Saves the file relative to the database home with strict path-traversal
+    protection. ``extra_metadata`` is a JSON-encoded dict of additional key/value
+    pairs merged into sidecar metadata.
+    """
+    meta: dict = {}
+    if extra_metadata:
+        try:
+            meta = json.loads(extra_metadata)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="extra_metadata must be valid JSON.")
+
+    root = config.home
+    target_dir = root / directory if directory else root
+    target_dir = target_dir.resolve()
+    if not str(target_dir).startswith(str(root)):
+        raise HTTPException(status_code=400, detail="Directory must be within the database home.")
+
+    if not target_dir.is_dir():
+        raise HTTPException(status_code=400, detail=f"Directory does not exist: {target_dir}")
+
+    name = filename if filename else file.filename or "uploaded"
+    target_path = target_dir / name
+
+    if not str(target_path.resolve()).startswith(str(root)):
+        raise HTTPException(status_code=400, detail="Filename must not contain path separators.")
+
+    with open(target_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    repo = Repository(str(config.db_path))
+    try:
+        indexer = Indexer(repo)
+        doc = indexer.add_file(str(target_path), document_type="generic", extra_metadata=meta or None)
+        if not doc:
+            raise HTTPException(status_code=500, detail="Failed to index uploaded file.")
         indexed = repo.get(doc.path)
         return UploadResponse(
             id=indexed.id,

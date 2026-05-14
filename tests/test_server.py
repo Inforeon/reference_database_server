@@ -149,7 +149,7 @@ class TestUpload:
     def test_upload_txt_and_index(self, client, db_home: str):
         """Upload a text file and verify it gets indexed."""
         resp = client.post(
-            "/api/index/upload",
+            "/api/documents/upload",
             files={"file": ("hello.txt", b"Hello world content", "text/plain")},
         )
         assert resp.status_code == 200
@@ -168,7 +168,7 @@ class TestUpload:
         (root / "papers").mkdir(parents=True, exist_ok=True)
 
         resp = client.post(
-            "/api/index/upload",
+            "/api/documents/upload",
             params={"directory": "papers"},
             files={"file": ("thesis.pdf", b"%PDF-1.4 fake pdf", "application/pdf")},
         )
@@ -180,7 +180,7 @@ class TestUpload:
     def test_upload_with_custom_filename(self, client, db_home: str):
         """Upload with a different filename than the original."""
         resp = client.post(
-            "/api/index/upload",
+            "/api/documents/upload",
             params={"filename": "renamed.txt"},
             files={"file": ("original.txt", b"content here", "text/plain")},
         )
@@ -189,7 +189,7 @@ class TestUpload:
 
     def test_upload_rejects_path_traversal_dir(self, client, db_home: str):
         resp = client.post(
-            "/api/index/upload",
+            "/api/documents/upload",
             params={"directory": "../etc"},
             files={"file": ("evil.txt", b"data", "text/plain")},
         )
@@ -197,7 +197,7 @@ class TestUpload:
 
     def test_upload_rejects_path_traversal_filename(self, client, db_home: str):
         resp = client.post(
-            "/api/index/upload",
+            "/api/documents/upload",
             params={"filename": "../../../tmp/evil.txt"},
             files={"file": ("payload", b"data", "text/plain")},
         )
@@ -205,7 +205,7 @@ class TestUpload:
 
     def test_upload_to_nonexistent_directory(self, client, db_home: str):
         resp = client.post(
-            "/api/index/upload",
+            "/api/documents/upload",
             params={"directory": "does_not_exist"},
             files={"file": ("test.txt", b"data", "text/plain")},
         )
@@ -214,7 +214,7 @@ class TestUpload:
     def test_upload_unsupported_type(self, client, db_home: str):
         """Uploading an unsupported extension should fail to index."""
         resp = client.post(
-            "/api/index/upload",
+            "/api/documents/upload",
             files={"file": ("image.png", b"\x89PNG\r\n\x1a\n", "image/png")},
         )
         assert resp.status_code == 500
@@ -406,7 +406,7 @@ class TestChapterEndpoints:
         """GET /api/documents/{id}/chapters returns chapter list."""
         doc_id = self._index_textbook_with_chapters(client, db_home)
 
-        resp = client.get(f"/api/documents/{doc_id}/chapters")
+        resp = client.get(f"/api/documents/textbooks/{doc_id}/chapters")
         assert resp.status_code == 200
         data = resp.json()
         assert len(data) == 2
@@ -418,7 +418,7 @@ class TestChapterEndpoints:
         """Chapter metadata should inherit from parent textbook."""
         doc_id = self._index_textbook_with_chapters(client, db_home)
 
-        resp = client.get(f"/api/documents/{doc_id}/chapters")
+        resp = client.get(f"/api/documents/textbooks/{doc_id}/chapters")
         assert resp.status_code == 200
         data = resp.json()
         # Parent author should be inherited
@@ -428,7 +428,7 @@ class TestChapterEndpoints:
         """GET /api/documents/{id}/chapters/{index} returns chapter text."""
         doc_id = self._index_textbook_with_chapters(client, db_home)
 
-        resp = client.get(f"/api/documents/{doc_id}/chapters/0")
+        resp = client.get(f"/api/documents/textbooks/{doc_id}/chapters/0")
         assert resp.status_code == 200
         data = resp.json()
         assert data["chapter_index"] == 0
@@ -439,7 +439,7 @@ class TestChapterEndpoints:
         """Requesting nonexistent chapter index returns 404."""
         doc_id = self._index_textbook_with_chapters(client, db_home)
 
-        resp = client.get(f"/api/documents/{doc_id}/chapters/99")
+        resp = client.get(f"/api/documents/textbooks/{doc_id}/chapters/99")
         assert resp.status_code == 404
 
     def test_list_chapters_on_non_textbook_returns_400(self, client, db_home: str):
@@ -456,7 +456,7 @@ class TestChapterEndpoints:
         assert resp.status_code == 200
         doc_id = resp.json()["id"]
 
-        resp = client.get(f"/api/documents/{doc_id}/chapters")
+        resp = client.get(f"/api/documents/textbooks/{doc_id}/chapters")
         assert resp.status_code == 400
 
     def test_search_returns_separated_groups(self, client, db_home: str):
@@ -556,7 +556,7 @@ class TestDirectoryTextbookEndpoints:
         # Upload as chapter
         with open(pdf_path, "rb") as f:
             resp = client.post(
-                f"/api/documents/{doc_id}/chapters/upload",
+                f"/api/documents/textbooks/{doc_id}/chapters/upload",
                 files={"file": ("intro.pdf", f.read(), "application/pdf")},
             )
         pdf_path.unlink()
@@ -592,7 +592,7 @@ class TestDirectoryTextbookEndpoints:
 
             with open(pdf_path, "rb") as f:
                 resp = client.post(
-                    f"/api/documents/{doc_id}/chapters/upload",
+                    f"/api/documents/textbooks/{doc_id}/chapters/upload",
                     files={"file": (f"ch{i}.pdf", f.read(), "application/pdf")},
                 )
             assert resp.status_code == 200
@@ -619,7 +619,7 @@ class TestDirectoryTextbookEndpoints:
 
         with open(pdf_path, "rb") as f:
             resp = client.post(
-                f"/api/documents/{doc_id}/chapters/upload?chapter_index=5",
+                f"/api/documents/textbooks/{doc_id}/chapters/upload?chapter_index=5",
                 files={"file": ("ch5.pdf", f.read(), "application/pdf")},
             )
         pdf_path.unlink()
@@ -648,7 +648,7 @@ class TestDirectoryTextbookEndpoints:
 
         with open(pdf_path, "rb") as f:
             resp = client.post(
-                f"/api/documents/{doc_id}/chapters/upload",
+                f"/api/documents/textbooks/{doc_id}/chapters/upload",
                 files={"file": ("chapter1.pdf", f.read(), "application/pdf")},
             )
         assert resp.status_code == 200
@@ -663,7 +663,7 @@ class TestDirectoryTextbookEndpoints:
 
         with open(pdf_path, "rb") as f:
             resp = client.post(
-                f"/api/documents/{doc_id}/chapters/upload",
+                f"/api/documents/textbooks/{doc_id}/chapters/upload",
                 files={"file": ("chapter1.pdf", f.read(), "application/pdf")},
             )
         pdf_path.unlink()
@@ -674,7 +674,7 @@ class TestDirectoryTextbookEndpoints:
         assert new_data["file_path"] == "chapter1.pdf"
 
         # Verify only one chapter exists
-        resp = client.get(f"/api/documents/{doc_id}/chapters")
+        resp = client.get(f"/api/documents/textbooks/{doc_id}/chapters")
         assert resp.status_code == 200
         chapters = resp.json()
         ch1_chapters = [c for c in chapters if c["file_path"] == "chapter1.pdf"]
@@ -699,7 +699,7 @@ class TestDirectoryTextbookEndpoints:
 
         with open(pdf_path, "rb") as f:
             resp = client.post(
-                f"/api/documents/{doc_id}/chapters/upload?filename=renamed_chapter.pdf",
+                f"/api/documents/textbooks/{doc_id}/chapters/upload?filename=renamed_chapter.pdf",
                 files={"file": ("original.pdf", f.read(), "application/pdf")},
             )
         pdf_path.unlink()
@@ -722,7 +722,7 @@ class TestDirectoryTextbookEndpoints:
 
         with open(pdf_path, "rb") as f:
             resp = client.post(
-                f"/api/documents/{doc_id}/chapters/upload",
+                f"/api/documents/textbooks/{doc_id}/chapters/upload",
                 files={"file": ("ch.pdf", f.read(), "application/pdf")},
             )
         pdf_path.unlink()
@@ -753,7 +753,7 @@ class TestDirectoryTextbookEndpoints:
 
         with open(pdf_path, "rb") as f:
             resp = client.post(
-                f"/api/documents/{doc_id}/chapters/upload",
+                f"/api/documents/textbooks/{doc_id}/chapters/upload",
                 files={"file": ("ch.pdf", f.read(), "application/pdf")},
             )
         pdf_path.unlink()
@@ -779,7 +779,7 @@ class TestDirectoryTextbookEndpoints:
 
         with open(pdf_path, "rb") as f:
             resp = client.post(
-                f"/api/documents/{doc_id}/chapters/upload?filename=../evil.pdf",
+                f"/api/documents/textbooks/{doc_id}/chapters/upload?filename=../evil.pdf",
                 files={"file": ("evil.pdf", f.read(), "application/pdf")},
             )
         pdf_path.unlink()
@@ -805,7 +805,7 @@ class TestDirectoryTextbookEndpoints:
 
         with open(pdf_path, "rb") as f:
             resp = client.post(
-                f"/api/documents/{doc_id}/chapters/upload",
+                f"/api/documents/textbooks/{doc_id}/chapters/upload",
                 files={"file": ("multi_page.pdf", f.read(), "application/pdf")},
             )
         pdf_path.unlink()
@@ -837,14 +837,14 @@ class TestDirectoryTextbookEndpoints:
 
         with open(pdf_path, "rb") as f:
             resp = client.post(
-                f"/api/documents/{doc_id}/chapters/upload",
+                f"/api/documents/textbooks/{doc_id}/chapters/upload",
                 files={"file": ("unique.pdf", f.read(), "application/pdf")},
             )
         pdf_path.unlink()
 
         chapter_idx = resp.json()["chapter_index"]
 
-        resp = client.get(f"/api/documents/{doc_id}/chapters/{chapter_idx}")
+        resp = client.get(f"/api/documents/textbooks/{doc_id}/chapters/{chapter_idx}")
         assert resp.status_code == 200
         data = resp.json()
         assert data["chapter_type"] == "file"
