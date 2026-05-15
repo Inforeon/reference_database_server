@@ -3,9 +3,11 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from docsearch.config import Config, default_config
 from .routes.documents import router as documents_router
+from .routes.fs import router as fs_router
 from .routes.index import router as index_router
 from .routes.papers import router as papers_router
 from .routes.textbooks import router as textbooks_router
@@ -30,8 +32,18 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # Allow the React dev server (and any origin in dev)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     app.include_router(index_router)
     app.include_router(search_router)
+    app.include_router(fs_router)
     app.include_router(documents_router)
     app.include_router(papers_router)
     app.include_router(textbooks_router)

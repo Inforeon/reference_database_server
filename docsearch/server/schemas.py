@@ -211,3 +211,19 @@ class SearchResponse(BaseModel):
     """Combined search response with separated result groups."""
     documents: DocumentSearchGroup
     chapters: ChapterSearchGroup
+
+
+# ── Filesystem browsing schemas ────────────────────────────────────
+
+class FileSystemEntry(BaseModel):
+    """A single entry in a directory listing."""
+    name: str
+    type: str  # "file" or "directory"
+    document_id: int | None = None
+
+
+class DirectoryListingResponse(BaseModel):
+    """Response for a directory listing request."""
+    path: str
+    entries: list[FileSystemEntry]
+    directories: list[FileSystemEntry]

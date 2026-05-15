@@ -383,3 +383,134 @@ class TestChapterRepository:
         repo.upsert_chapter(Chapter(textbook_id=tb.id, chapter_index=0, title="A", full_text="a"))
         repo.remove(tb.path)
         assert len(repo.get_chapters(tb.id)) == 0
+
+
+class TestListDirectory:
+    """Tests for Repository.list_directory()."""
+
+    def _add_doc(self, repo: Repository, path: str, **kwargs) -> None:
+        p = Path(path)
+        doc = Document(
+            path=str(p),
+            filename=kwargs.pop("filename", p.name),
+            directory=kwargs.pop("directory", str(p.parent)),
+            extension=kwargs.pop("extension", p.suffix.lstrip(".")),
+            size=100,
+            mtime=1700000000.0,
+            content_hash="abc",
+            extracted_metadata={},
+            sidecar_metadata={},
+            full_text="content",
+            **kwargs,
+        )
+        repo.upsert(doc)
+
+    def test_empty_directory(self, repo: Repository):
+        result = repo.list_directory("/empty")
+        assert result["entries"] == []
+        assert result["directories"] == []
+
+    def test_files_only(self, repo: Repository):
+        self._add_doc(repo, "/docs/a.md")
+        self._add_doc(repo, "/docs/b.pdf")
+        result = repo.list_directory("/docs")
+        names = [e["name"] for e in result["entries"]]
+        assert "a.md" in names
+        assert "b.pdf" in names
+        assert all(e["type"] == "file" for e in result["entries"])
+        assert all(e["document_id"] is not None for e in result["entries"])
+        assert result["directories"] == []
+
+    def test_inferred_subdirectories(self, repo: Repository):
+        self._add_doc(repo, "/docs/sub/c.md")
+        self._add_doc(repo, "/docs/other/d.md")
+        result = repo.list_directory("/docs")
+        dir_names = {d["name"] for d in result["directories"]}
+        assert "sub" in dir_names
+        assert "other" in dir_names
+        assert all(d["type"] == "directory" for d in result["directories"])
+
+    def test_deeply_nested_infers_only_immediate_children(self, repo: Repository):
+        self._add_doc(repo, "/docs/sub/deep/e.md")
+        result = repo.list_directory("/docs")
+        dir_names = {d["name"] for d in result["directories"]}
+        assert "sub" in dir_names
+        assert "deep" not in dir_names  # not an immediate child
+
+    def test_root_directory_listing(self, repo: Repository):
+        self._add_doc(repo, "/a/x.md")
+        self._add_doc(repo, "/b/y.md")
+        result = repo.list_directory("")
+        dir_names = {d["name"] for d in result["directories"]}
+        assert "a" in dir_names
+        assert "b" in dir_names
+
+    def test_mixed_files_and_subdirs(self, repo: Repository):
+        self._add_doc(repo, "/docs/readme.md")
+        self._add_doc(repo, "/docs/papers/one.md")
+        result = repo.list_directory("/docs")
+        file_names = {e["name"] for e in result["entries"]}
+        dir_names = {d["name"] for d in result["directories"]}
+        assert "readme.md" in file_names
+        assert "papers" in dir_names
+
+    def test_directory_type_textbook_appears_as_directory(self, repo: Repository):
+        """A source_type='directory' textbook should appear as a directory entry."""
+        self._add_doc(
+            repo,
+            "/library/my_book",
+            filename="my_book",
+            document_type="textbook",
+            source_type="directory",
+            extension="",
+        )
+        result = repo.list_directory("/library")
+        # Should NOT be in file entries
+        file_names = {e["name"] for e in result["entries"]}
+        assert "my_book" not in file_names
+        # Should be in directory entries WITH a document_id
+        dir_entries = {d["name"]: d for d in result["directories"]}
+        assert "my_book" in dir_entries
+        assert dir_entries["my_book"]["document_id"] is not None
+        assert dir_entries["my_book"]["type"] == "directory"
+
+    def test_directory_type_textbook_deduplicates_with_inferred(self, repo: Repository):
+        """If a directory-type textbook shares a name with an inferred subdir, keep only one."""
+        self._add_doc(
+            repo,
+            "/lib/textbook",
+            filename="textbook",
+            document_type="textbook",
+            source_type="directory",
+            extension="",
+        )
+        self._add_doc(repo, "/lib/textbook/chapter1.md")
+        result = repo.list_directory("/lib")
+        dir_entries = {d["name"]: d for d in result["directories"]}
+        assert "textbook" in dir_entries
+        # The entry should carry the document_id (from the textbook row)
+        assert dir_entries["textbook"]["document_id"] is not None
+        # Only one entry for "textbook"
+        assert sum(1 for d in result["directories"] if d["name"] == "textbook") == 1
+
+    def test_reference_documents_appear_as_files(self, repo: Repository):
+        """Metadata-only references should appear as file entries."""
+        self._add_doc(
+            repo,
+            "/refs/smith_2024",
+            filename="smith_2024",
+            document_type="paper",
+            source_type="reference",
+            extension="",
+        )
+        result = repo.list_directory("/refs")
+        file_names = {e["name"] for e in result["entries"]}
+        assert "smith_2024" in file_names
+
+    def test_sorted_ordering(self, repo: Repository):
+        self._add_doc(repo, "/docs/z.md")
+        self._add_doc(repo, "/docs/a.md")
+        self._add_doc(repo, "/docs/m.md")
+        result = repo.list_directory("/docs")
+        names = [e["name"] for e in result["entries"]]
+        assert names == sorted(names)

@@ -605,6 +605,65 @@ class Repository:
         )
         return [row["id"] for row in cur.fetchall()]
 
+    def list_directory(self, directory: str) -> dict[str, Any]:
+        """List the contents of a directory as stored in the index.
+
+        Returns direct child documents and infers subdirectories from
+        nested document paths.  The ``directory`` argument is interpreted
+        relative to the database home (the caller must resolve it first).
+
+        Returns a dict with two keys:
+        - ``"entries"``: list of dicts with ``name``, ``type`` ("file"),
+          and ``document_id`` for each indexed file that lives directly
+          under the given directory.
+        - ``"directories"``: list of dicts with ``name`` and ``type``
+          ("directory") for each immediate subdirectory inferred from
+          indexed documents.
+        """
+        # Direct children — documents whose directory column matches exactly.
+        # Split: source_type='directory' rows become directory entries;
+        # everything else becomes a file entry.
+        cur = self._conn.execute(
+            "SELECT id, filename, source_type FROM documents WHERE directory = ? ORDER BY filename",
+            (directory,),
+        )
+        entries: list[dict[str, Any]] = []
+        db_dirs: list[dict[str, Any]] = []
+        for row in cur.fetchall():
+            if row["source_type"] == "directory":
+                db_dirs.append(
+                    {"name": row["filename"], "type": "directory", "document_id": row["id"]}
+                )
+            else:
+                entries.append(
+                    {"name": row["filename"], "type": "file", "document_id": row["id"]}
+                )
+
+        # Inferred subdirectories — fetch all directories nested under
+        # the target and extract the immediate first-level component.
+        prefix = f"{directory}/" if directory else ""
+        cur = self._conn.execute(
+            "SELECT directory FROM documents WHERE directory LIKE ?",
+            (prefix + "%",),
+        )
+        subdirs: set[str] = set()
+        for row in cur.fetchall():
+            rel = row["directory"][len(prefix):].lstrip("/")
+            if "/" in rel:
+                rel = rel.split("/", 1)[0]
+            if rel:
+                subdirs.add(rel)
+        dirs = [
+            {"name": name, "type": "directory"}
+            for name in sorted(subdirs)
+        ]
+        # Merge directory-type textbook entries with inferred subdirectories,
+        # deduplicating by name (db_dirs take precedence — they carry an id).
+        seen_names = {d["name"] for d in db_dirs}
+        all_dirs = db_dirs + [d for d in dirs if d["name"] not in seen_names]
+
+        return {"entries": entries, "directories": all_dirs}
+
     def close(self) -> None:
         """Close the underlying database connection."""
         self._conn.close()

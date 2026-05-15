@@ -1189,3 +1189,137 @@ class TestTextbookReferenceEndpoints:
         hit = data["documents"]["results"][0]
         assert hit["document"]["source_type"] == "reference"
         assert hit["document"]["document_type"] == "textbook"
+
+
+class TestFileSystemEndpoint:
+    """Tests for GET /api/fs directory listing endpoint."""
+
+    def _seed_db(self, db_home: str, docs: list[dict]) -> None:
+        """Insert documents directly into the database for fixture setup.
+
+        Each doc dict may specify ``path`` (relative to db_home) and optionally
+        ``filename``, ``directory`` (computed from path if omitted), ``extension``,
+        ``document_type``, ``source_type``.
+        """
+        from pathlib import Path as _Path
+
+        root = _Path(db_home).resolve()
+        db_path = root / "docsearch.db"
+        repo = Repository(str(db_path))
+        try:
+            for d in docs:
+                rel = _Path(d["path"].lstrip("/"))
+                full_path = (root / rel).resolve()
+                doc = Document(
+                    path=str(full_path),
+                    filename=d.get("filename", full_path.name),
+                    directory=str(full_path.parent),
+                    extension=d.get("extension", full_path.suffix.lstrip(".")),
+                    document_type=d.get("document_type", "generic"),
+                    source_type=d.get("source_type"),
+                    size=100,
+                    mtime=1700000000.0,
+                    content_hash="abc",
+                    extracted_metadata={},
+                    sidecar_metadata={},
+                    full_text="content",
+                )
+                repo.upsert(doc)
+        finally:
+            repo.close()
+
+    def test_root_directory(self, client, db_home: str):
+        self._seed_db(db_home, [
+            {"path": "/docs/a.md", "directory": "/docs"},
+            {"path": "/papers/b.pdf", "directory": "/papers"},
+        ])
+        resp = client.get("/api/fs?path=")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["path"] == ""
+        dir_names = {d["name"] for d in data["directories"]}
+        assert "docs" in dir_names
+        assert "papers" in dir_names
+
+    def test_list_subdirectory_with_files(self, client, db_home: str):
+        self._seed_db(db_home, [
+            {"path": "/docs/readme.md", "directory": "/docs"},
+            {"path": "/docs/guide.pdf", "directory": "/docs"},
+        ])
+        resp = client.get("/api/fs?path=docs")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["path"] == "docs"
+        file_names = {e["name"] for e in data["entries"]}
+        assert "readme.md" in file_names
+        assert "guide.pdf" in file_names
+        assert all(e["type"] == "file" for e in data["entries"])
+        assert all(e["document_id"] is not None for e in data["entries"])
+
+    def test_mixed_files_and_directories(self, client, db_home: str):
+        self._seed_db(db_home, [
+            {"path": "/docs/readme.md", "directory": "/docs"},
+            {"path": "/docs/sub/nested.md", "directory": "/docs/sub"},
+        ])
+        resp = client.get("/api/fs?path=docs")
+        assert resp.status_code == 200
+        data = resp.json()
+        file_names = {e["name"] for e in data["entries"]}
+        dir_names = {d["name"] for d in data["directories"]}
+        assert "readme.md" in file_names
+        assert "sub" in dir_names
+
+    def test_directory_type_textbook_as_directory_entry(self, client, db_home: str):
+        """A source_type='directory' textbook appears as a directory with document_id."""
+        self._seed_db(db_home, [
+            {
+                "path": "/library/my_book",
+                "filename": "my_book",
+                "directory": "/library",
+                "extension": "",
+                "document_type": "textbook",
+                "source_type": "directory",
+            },
+        ])
+        resp = client.get("/api/fs?path=library")
+        assert resp.status_code == 200
+        data = resp.json()
+        # Not in file entries
+        file_names = {e["name"] for e in data["entries"]}
+        assert "my_book" not in file_names
+        # In directory entries with document_id
+        dir_entries = {d["name"]: d for d in data["directories"]}
+        assert "my_book" in dir_entries
+        assert dir_entries["my_book"]["type"] == "directory"
+        assert dir_entries["my_book"]["document_id"] is not None
+
+    def test_empty_directory_returns_empty_lists(self, client, db_home: str):
+        resp = client.get("/api/fs?path=nonexistent")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["entries"] == []
+        assert data["directories"] == []
+
+    def test_path_traversal_rejected(self, client, db_home: str):
+        resp = client.get("/api/fs?path=../etc")
+        assert resp.status_code == 400
+
+    def test_response_includes_path_field(self, client, db_home: str):
+        self._seed_db(db_home, [
+            {"path": "/a/b/c.md", "directory": "/a/b"},
+        ])
+        resp = client.get("/api/fs?path=a")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["path"] == "a"
+
+    def test_deeply_nested_only_immediate_children(self, client, db_home: str):
+        self._seed_db(db_home, [
+            {"path": "/docs/sub/deep/file.md", "directory": "/docs/sub/deep"},
+        ])
+        resp = client.get("/api/fs?path=docs")
+        assert resp.status_code == 200
+        data = resp.json()
+        dir_names = {d["name"] for d in data["directories"]}
+        assert "sub" in dir_names
+        assert "deep" not in dir_names

@@ -19,7 +19,7 @@ docsearch/
     ├── app.py       — App factory, lifespan, health endpoint
     ├── dependencies.py — Shared FastAPI dependencies (get_config)
     ├── schemas.py   — Pydantic request/response schemas
-    └── routes/      — Route modules (documents, index, search, papers, textbooks)
+    └── routes/      — Route modules (documents, index, search, fs, papers, textbooks)
 ```
 
 **Shared core layer:** Both the CLI and REST API use the same `Repository`, `Indexer`, and `DocumentHandler` classes from `core/`, ensuring consistency between interfaces.
@@ -70,7 +70,7 @@ This generalizes the former `textbook_variant` column (renamed in-place via migr
 ### Core (`docsearch/core/`)
 
 - **`models.py`** — `Document` dataclass (indexed document with extracted + sidecar metadata, `document_type`, `source_type`), `Chapter` (textbook chapter with `textbook_id`, `chapter_index`, `title`, `chapter_type`, `start_page`, `end_page`, `page_count`, `file_path`, `metadata`, `full_text`; `combined_metadata()` inherits from parent `Document`), `SearchResult` (document + FTS score + optional `chapter` field + snippet), `SearchQuery` (search parameters: query string, scope, file type, author, tags, date range, `document_types` filter, pagination). `from_row()` supports `tuple`, `dict`, and `sqlite3.Row` inputs (uses `row.keys()` membership checks for mapping types).
-- **`repository.py`** — SQLite-backed store with WAL journal mode. Uses FTS5 for full-text search over `filename`, `directory`, and `full_text`. Dynamic SQL query builder supporting filters on scope, extension, author (via `json_extract`), tags, date range, and `document_types`. Methods: `upsert`, `search`, `get`, `get_by_id`, `remove`, `count`, `all_paths`, `exists`. Chapter methods: `upsert_chapter`, `get_chapters`, `get_chapter`, `delete_chapters`, `get_chapter_by_file_path`, `delete_chapter_by_id`, `search_textbook_chapters` (two-phase: resolve textbook IDs from metadata filters → FTS search within those chapters). Migration logic handles adding new columns and renaming existing ones (`_migrate_existing_columns`).
+- **`repository.py`** — SQLite-backed store with WAL journal mode. Uses FTS5 for full-text search over `filename`, `directory`, and `full_text`. Dynamic SQL query builder supporting filters on scope, extension, author (via `json_extract`), tags, date range, and `document_types`. Methods: `upsert`, `search`, `get`, `get_by_id`, `remove`, `count`, `all_paths`, `exists`, `list_directory` (filesystem-style directory listing that infers subdirectories from nested document paths). Chapter methods: `upsert_chapter`, `get_chapters`, `get_chapter`, `delete_chapters`, `get_chapter_by_file_path`, `delete_chapter_by_id`, `search_textbook_chapters` (two-phase: resolve textbook IDs from metadata filters → FTS search within those chapters). Migration logic handles adding new columns and renaming existing ones (`_migrate_existing_columns`).
 - **`indexer.py`** — Orchestrates indexing. Calls `load_extractors()` from the extractors package to build the extension→extractor map. Delegates document processing to `handlers.get_handler()`. Computes SHA-256 content hashes for change detection, loads `.meta.json` sidecar files. `scan_directory()` performs a full sync: detects new/changed/deleted files and updates the index accordingly. Short-circuits for `document_type="reference"` (no file required).
 - **`handlers.py`** — Pipeline-based document processing framework. Base `DocumentHandler` class with `pre_process()`, `extract_metadata()`, `extract_text()`, `post_process()` hooks. Subclasses:
   - `GenericDocumentHandler` — default behavior, identical to legacy indexer
@@ -151,6 +151,7 @@ All routes share a single `get_config()` dependency from `server/dependencies.py
 |---|---|---|
 | GET | `/api/health` | Health check (returns home and db path) |
 | GET | `/api/search` | Search (query params: q, scope, file_type, author, tags, after, before, offset, limit) |
+| GET | `/api/fs` | List directory contents (query param: `path` relative to db home) → `{path, entries, directories}` |
 | POST | `/api/index/scan` | Scan directory body: `{dirpath, recursive, document_type, extra_metadata}` |
 | POST | `/api/index/add` | Add file body: `{filepath, document_type, extra_metadata}` |
 | POST | `/api/index/remove` | Remove file body: `{filepath}` |
@@ -179,10 +180,10 @@ Located in `tests/`, run with `pytest`.
 
 | File | Coverage |
 |---|---|
-| `test_repository.py` | `Document` model (`combined_metadata`, `from_row`), `Repository` (upsert, remove, count, all_paths, search with FTS/scope/author/extension/tags/limit filters, get_by_id, exists) |
+| `test_repository.py` | `Document` model (`combined_metadata`, `from_row`), `Repository` (upsert, remove, count, all_paths, search with FTS/scope/author/extension/tags/limit filters, get_by_id, exists), `list_directory` (empty dir, files only, inferred subdirs, deeply nested, root listing, mixed files/subdirs, directory-type textbook as directory entry, deduplication, reference documents, sorted ordering) |
 | `test_extractors.py` | `PdfExtractor` (metadata extraction, text extraction, multi-page, fault tolerance) |
 | `test_handlers.py` | BibTeX helpers (`_normalize_title`, `_titles_match`, `_format_author_dict`, `_format_authors_bib`, `_generate_bibtex_from_metadata`), `PaperDocumentHandler` integration (skip_bib, DOI embedding, title mismatch logic, authors_bib handling) |
-| `test_server.py` | REST API content/file endpoints (`/content`, `/file`), upload (basic, subdirectory, custom name, path traversal rejection, nonexistent dir, unsupported type), BibTeX endpoint, paper endpoints (add/upload with DOI), textbook endpoints (add/upload), chapter endpoints (list, get, search), directory textbook endpoints (empty dir creation, chapter upload, auto-indexing, overwrite, path traversal), reference endpoints (basic, DOI, bibtex generation, custom bibtex, title validation, citation key, extra metadata, searchable content, file download 404, search integration, duplicate upsert) |
+| `test_server.py` | REST API content/file endpoints (`/content`, `/file`), upload (basic, subdirectory, custom name, path traversal rejection, nonexistent dir, unsupported type), BibTeX endpoint, paper endpoints (add/upload with DOI), textbook endpoints (add/upload), chapter endpoints (list, get, search), directory textbook endpoints (empty dir creation, chapter upload, auto-indexing, overwrite, path traversal), reference endpoints (basic, DOI, bibtex generation, custom bibtex, title validation, citation key, extra metadata, searchable content, file download 404, search integration, duplicate upsert), filesystem browsing (`/api/fs`: root listing, subdirectory files, mixed files/dirs, directory-type textbook as directory entry, empty dir, path traversal rejection, path field, deeply nested immediate children) |
 | `conftest.py` | Shared fixtures: `sample_pdf_with_metadata`, `sample_pdf_no_metadata`, `sample_pdf_multipage` (generated on-the-fly via PyMuPDF) |
 | `fixtures/documents.py` | Duplicate of conftest.py fixtures (not currently imported) |
 

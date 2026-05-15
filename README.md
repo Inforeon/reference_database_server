@@ -192,6 +192,14 @@ All routes prefixed with `/api`.
 |---|---|---|
 | `GET` | `/search` | Full-text search (query params: `q`, `scope`, `file_type`, `author`, `tags`, `after`, `before`, `document_types`, `offset`, `limit`) → `{documents: {results, total}, chapters: {results, total}}` |
 
+### Filesystem Browsing
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/fs` | List indexed contents of a directory (query param: `path` relative to db home) → `{path, entries, directories}` |
+
+The `entries` array contains file-level documents (`type: "file"`, with `document_id`). The `directories` array contains inferred subdirectories (`type: "directory"`, no `document_id`) **and** directory-type textbooks (`type: "directory"`, **with** `document_id`). Files and directories are returned separately; path traversal outside the database home is rejected with 400.
+
 ### Documents
 
 All document operations (metadata, content, file download, sidecar, BibTeX, move) apply to any document type — generic, paper, textbook, or reference.

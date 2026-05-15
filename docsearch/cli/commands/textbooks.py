@@ -15,9 +15,6 @@ def textbooks() -> None:
     pass
 
 
-textbooks.add_command(reference)
-
-
 @textbooks.command()
 @click.argument("filepath", type=click.Path(exists=True, dir_okay=False))
 @click.option(
