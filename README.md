@@ -55,6 +55,7 @@ uvicorn docsearch.server.app:app --host 0.0.0.0 --port 8000
 ```
 
 Set `DOCSEARCH_HOME` to control the database home directory (default: current working directory).
+Set `DOCSEARCH_DB_PATH` to place the SQLite database file anywhere (default: `{home}/docsearch.db`).
 
 Interactive API docs available at `http://localhost:8000/docs`.
 
@@ -62,10 +63,11 @@ Interactive API docs available at `http://localhost:8000/docs`.
 
 | | Default | Override |
 |---|---|---|
-| CLI | Current working directory | `--home PATH` |
-| REST API | Current working directory | `DOCSEARCH_HOME` env var |
+| CLI home | Current working directory | `--home PATH` |
+| API home | Current working directory | `DOCSEARCH_HOME` env var |
+| Database path | `{home}/docsearch.db` | `DOCSEARCH_DB_PATH` env var |
 
-All data lives under the database home: the SQLite database at `{home}/docsearch.db`, and uploaded files stored relative to `{home}`.
+All document paths are stored **relative** to the database home, making the index portable across machines. The database file itself can live independently (e.g. on local disk when home is a network mount).
 
 ## Document Types
 

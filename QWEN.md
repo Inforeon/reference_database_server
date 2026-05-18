@@ -29,7 +29,6 @@ docsearch/
 ### Database Home
 
 The **database home** is an explicit root directory under which all data lives:
-- The SQLite database sits at `{home}/docsearch.db`
 - All document paths are stored **relative** to the database home (portable across machines)
 - Absolute paths are resolved dynamically as `config.home / doc.path` for filesystem operations
 - File uploads are scoped within the database home
@@ -38,6 +37,16 @@ The **database home** is an explicit root directory under which all data lives:
 |---|---|---|
 | CLI | Current working directory (`.`) | `--home PATH` |
 | REST API | Current working directory (`.`) | `DOCSEARCH_HOME` env var |
+
+### Database Path
+
+The SQLite database file defaults to `{home}/docsearch.db` but can be placed independently:
+
+| | Default | Override |
+|---|---|---|
+| DB path | `{home}/docsearch.db` | `DOCSEARCH_DB_PATH` env var |
+
+This decoupling is useful when the home directory is on a network mount with restrictive permissions — the documents live on the network drive while the database sits on local disk.
 
 See `docsearch/config.py` — the `Config` class owns this logic with `resolve_path()` (user→absolute) and `relative_path()` (absolute→relative) helpers.
 
