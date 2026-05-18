@@ -25,7 +25,7 @@ async def add_paper(
     If ``doi`` is provided it will be embedded into the PDF before bibliographic
     extraction via pdf2bib.  Set ``skip_bib = true`` to bypass pdf2bib entirely.
     """
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
         extra_meta: dict[str, Any] = dict(body.extra_metadata or {})
@@ -96,7 +96,7 @@ async def upload_paper(
     with open(target_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
         rel_target = str(target_path.relative_to(config.home))
@@ -153,7 +153,7 @@ async def add_reference(
     # Resolve filepath relative to database home
     filepath = body.filepath or ""
 
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
         doc = indexer.add_reference(

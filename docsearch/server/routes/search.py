@@ -54,7 +54,7 @@ async def search(
         limit=limit,
     )
 
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         # ── Phase 1: Non-textbook documents (generic, paper) ──────
         doc_results: list[SearchResultResponse] = []

@@ -21,7 +21,7 @@ def info(ctx: click.Context) -> None:
     from docsearch.core.repository import Repository
 
     config = ctx.obj["config"]
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     count = repo.count()
     click.echo(f"Home:       {config.home}")
     click.echo(f"Database:   {config.db_path}")

@@ -52,7 +52,7 @@ async def add_textbook_reference(
     # Resolve filepath relative to database home
     filepath = body.filepath or ""
 
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
         doc = indexer.add_reference(
@@ -78,7 +78,7 @@ async def add_textbook(
     config = Depends(get_config),
 ) -> TextbookUploadResponse:
     """Add a textbook to the index."""
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
         extra_meta: dict[str, Any] = dict(body.extra_metadata or {})
@@ -140,7 +140,7 @@ async def upload_textbook(
         textbook_dir = target_dir / name
         textbook_dir.mkdir(parents=True, exist_ok=True)
 
-        repo = Repository(str(config.db_path))
+        repo = Repository(str(config.db_path), config.home)
         try:
             indexer = Indexer(repo, config.home)
             rel_dir = str(textbook_dir.relative_to(config.home))
@@ -176,7 +176,7 @@ async def upload_textbook(
     with open(target_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
         rel_target = str(target_path.relative_to(config.home))
@@ -203,7 +203,7 @@ async def list_chapters(
     config = Depends(get_config),
 ) -> list[ChapterResponse]:
     """List all chapters for a textbook. Returns 400 if not a textbook."""
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         doc = repo.get_by_id(doc_id)
         if not doc:
@@ -241,7 +241,7 @@ async def get_chapter(
     config = Depends(get_config),
 ) -> ChapterContentResponse:
     """Get a specific chapter by index. Returns 400 if not a textbook, 404 if chapter missing."""
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         doc = repo.get_by_id(doc_id)
         if not doc:
@@ -287,7 +287,7 @@ async def upload_chapter(
     chapter entry. If a file with the same name already exists, it is overwritten
     and the old chapter row is replaced.
     """
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         doc = repo.get_by_id(doc_id)
         if not doc:

@@ -26,7 +26,7 @@ def textbooks() -> None:
 def add(ctx: dict, filepath: str, meta_pairs: tuple[str, ...]) -> None:
     """Add a textbook to the index."""
     config = ctx["config"]
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
         extra_meta = _parse_meta_pairs(meta_pairs)
@@ -72,7 +72,7 @@ def upload(ctx: dict, file, name: str | None, directory: str, meta_pairs: tuple[
     with open(target_path, "wb") as f:
         shutil.copyfileobj(file, f)
 
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
         extra_meta = _parse_meta_pairs(meta_pairs)
@@ -114,7 +114,7 @@ def reference(ctx: dict, title: str, author: str | None, year: str | None, publi
     normal ``textbooks add`` will enrich the entry in-place.
     """
     config = ctx["config"]
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
         extra_meta = _parse_meta_pairs(meta_pairs) or {}
@@ -147,7 +147,7 @@ def reference(ctx: dict, title: str, author: str | None, year: str | None, publi
 def chapters(ctx: dict, filepath: str) -> None:
     """List all indexed chapters for a textbook."""
     config = ctx["config"]
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         # Convert user-supplied path to relative for DB lookup
         abs_p = Path(filepath).resolve()
@@ -182,7 +182,7 @@ def chapters(ctx: dict, filepath: str) -> None:
 def chapter(ctx: dict, filepath: str, index: int) -> None:
     """Print the full text of a specific chapter."""
     config = ctx["config"]
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         # Convert user-supplied path to relative for DB lookup
         abs_p = Path(filepath).resolve()

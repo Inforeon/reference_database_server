@@ -101,13 +101,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_tc_chapter ON textbook_chapters(textbook_i
 class Repository:
     """SQLite-backed repository for storing and searching indexed documents."""
 
-    def __init__(self, db_path: str | Path) -> None:
-        self.db_path = Path(db_path)
+    def __init__(self, db_path: str | Path, home: str | Path | None = None) -> None:
+        self.db_path = Path(db_path).resolve()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self.db_path))
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
+        self._home = Path(home).resolve() if home else None
         self._init_schema()
 
     def _init_schema(self) -> None:
@@ -148,7 +149,7 @@ class Repository:
 
         # --- Convert stored absolute paths to relative (portability migration) ---
         try:
-            home = str(self.db_path.parent.resolve())
+            home = str(self._home if self._home else self.db_path.parent.resolve())
             rows = cur.execute(
                 "SELECT id, path, directory FROM documents WHERE path LIKE ?",
                 (home + "%",),

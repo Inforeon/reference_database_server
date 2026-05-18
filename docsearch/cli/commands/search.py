@@ -41,7 +41,7 @@ def search(
 ) -> None:
     """Search indexed documents by content and metadata."""
     config = ctx["config"]
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         sq = SearchQuery(
             q=query,

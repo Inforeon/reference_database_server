@@ -32,7 +32,7 @@ async def list_directory(
     # Pass the relative directory path (stored paths are relative to home)
     rel_dir = str(target.relative_to(root)) if path else ""
 
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         data = repo.list_directory(rel_dir)
     finally:

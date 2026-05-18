@@ -11,20 +11,28 @@ class Config:
     """Central configuration for docsearch.
 
     The *database home* is the root directory under which all data lives.
-    The SQLite database file sits at ``{home}/{_DB_FILENAME}``.
     All document paths are resolved relative to the database home.
 
-    Default home: current working directory.
-    Override via ``DOCSEARCH_HOME`` environment variable.
+    The SQLite database file defaults to ``{home}/docsearch.db`` but can be
+    placed anywhere via ``DOCSEARCH_DB_PATH`` (useful when home is on a network
+    mount with restrictive permissions).
+
+    Override home via ``DOCSEARCH_HOME`` environment variable.
+    Override database path via ``DOCSEARCH_DB_PATH`` environment variable.
     """
 
-    def __init__(self, home: str | Path | None = None):
+    def __init__(self, home: str | Path | None = None, db_path: str | Path | None = None):
         if home is not None:
             self.home = Path(home).resolve()
         else:
             self.home = Path(os.environ.get("DOCSEARCH_HOME", "")).resolve() if os.environ.get("DOCSEARCH_HOME") else Path.cwd().resolve()
 
-        self.db_path = self.home / _DB_FILENAME
+        if db_path is not None:
+            self.db_path = Path(db_path).resolve()
+        elif os.environ.get("DOCSEARCH_DB_PATH"):
+            self.db_path = Path(os.environ["DOCSEARCH_DB_PATH"]).resolve()
+        else:
+            self.db_path = self.home / _DB_FILENAME
 
     @property
     def db_filename(self) -> str:

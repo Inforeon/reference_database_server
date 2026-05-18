@@ -18,7 +18,7 @@ from docsearch.core.repository import Repository
 def get(ctx: dict, doc_id: int, output_format: str) -> None:
     """Retrieve the extracted text content of a document by ID."""
     config = ctx["config"]
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         doc = repo.get_by_id(doc_id)
         if not doc:

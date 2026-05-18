@@ -11,7 +11,7 @@ from docsearch.core.repository import Repository
 def bibtex(ctx: dict, doc_id: int) -> None:
     """Export BibTeX for a research paper by document ID."""
     config = ctx["config"]
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         doc = repo.get_by_id(doc_id)
         if not doc:

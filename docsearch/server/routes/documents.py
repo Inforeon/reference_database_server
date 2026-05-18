@@ -53,7 +53,7 @@ async def add_generic_reference(
     # Resolve filepath relative to database home
     filepath = body.filepath or ""
 
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
         doc = indexer.add_reference(
@@ -112,7 +112,7 @@ async def upload_file(
     with open(target_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
         rel_target = str(target_path.relative_to(config.home))
@@ -135,7 +135,7 @@ async def get_document(
     config = Depends(get_config),
 ) -> DocumentResponse:
     """Get a document by its internal ID."""
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         doc = repo.get_by_id(doc_id)
         if not doc:
@@ -163,7 +163,7 @@ async def get_content(
     config = Depends(get_config),
 ) -> ContentResponse:
     """Get the extracted text content of a document."""
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         doc = repo.get_by_id(doc_id)
         if not doc:
@@ -184,7 +184,7 @@ async def get_file(
     config = Depends(get_config),
 ) -> FileResponse:
     """Download the original file for a document."""
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         doc = repo.get_by_id(doc_id)
         if not doc:
@@ -208,7 +208,7 @@ async def patch_meta(
     config = Depends(get_config),
 ) -> dict:
     """Update a key in the sidecar metadata for a document."""
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         doc = repo.get_by_id(doc_id)
         if not doc:
@@ -240,7 +240,7 @@ async def get_meta(
     config = Depends(get_config),
 ) -> dict:
     """Get the sidecar metadata for a document."""
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         doc = repo.get_by_id(doc_id)
         if not doc:
@@ -256,7 +256,7 @@ async def get_bibtex(
     config = Depends(get_config),
 ) -> dict:
     """Export BibTeX for a research paper."""
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         doc = repo.get_by_id(doc_id)
         if not doc:
@@ -305,7 +305,7 @@ async def move_document(
             detail="Destination must be within the database home.",
         )
 
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         doc = repo.get_by_id(doc_id)
         if not doc:

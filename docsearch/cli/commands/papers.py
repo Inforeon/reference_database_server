@@ -33,7 +33,7 @@ def add(ctx: dict, filepath: str, doi: str | None, skip_bib: bool, meta_pairs: t
     bypass pdf2bib entirely.
     """
     config = ctx["config"]
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
         extra_meta = _parse_meta_pairs(meta_pairs)
@@ -83,7 +83,7 @@ def upload(ctx: dict, file, name: str | None, directory: str, doi: str | None, s
     with open(target_path, "wb") as f:
         shutil.copyfileobj(file, f)
 
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
         extra_meta = _parse_meta_pairs(meta_pairs)
@@ -132,7 +132,7 @@ def reference(ctx: dict, title: str, author: str | None, year: str | None, journ
     ``papers add`` will enrich the entry in-place.
     """
     config = ctx["config"]
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
         extra_meta = _parse_meta_pairs(meta_pairs) or {}

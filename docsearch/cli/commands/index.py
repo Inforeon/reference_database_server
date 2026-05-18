@@ -29,7 +29,7 @@ def scan(ctx: dict, dirpath: str, no_recursive: bool) -> None:
     For document-type-specific scanning use ``papers`` or ``textbooks`` commands.
     """
     config = ctx["config"]
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
         stats = indexer.scan_directory(dirpath, recursive=not no_recursive, document_type="generic")
@@ -52,7 +52,7 @@ def add(ctx: dict, filepath: str) -> None:
     For document-type-specific behaviour use ``papers add`` or ``textbooks add``.
     """
     config = ctx["config"]
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
         doc = indexer.add_file(filepath, document_type="generic")
@@ -70,7 +70,7 @@ def add(ctx: dict, filepath: str) -> None:
 def remove(ctx: dict, filepath: str) -> None:
     """Remove a file from the index."""
     config = ctx["config"]
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
         if indexer.remove_file(filepath):
@@ -107,7 +107,7 @@ def move(ctx: dict, source: str, destination: str) -> None:
         click.echo("Destination must be within the database home.", err=True)
         return
 
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         source_p = Path(source).resolve()
 
@@ -135,7 +135,7 @@ def move(ctx: dict, source: str, destination: str) -> None:
 def status(ctx: dict, filepath: str) -> None:
     """Check whether a file needs re-indexing."""
     config = ctx["config"]
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
         needs = indexer.needs_reindex(filepath)

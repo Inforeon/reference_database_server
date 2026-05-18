@@ -25,7 +25,7 @@ async def scan_dir(
     For document-type-specific behaviour (e.g. paper DOI resolution), prefer
     the dedicated ``/api/documents/papers`` or ``/api/documents/textbooks`` endpoints.
     """
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
         stats = indexer.scan_directory(body.dirpath, recursive=body.recursive, document_type=body.document_type, extra_metadata=body.extra_metadata or None)
@@ -46,7 +46,7 @@ async def add_file(
     For document-type-specific behaviour (e.g. paper DOI resolution), prefer
     the dedicated ``/api/documents/papers`` or ``/api/documents/textbooks`` endpoints.
     """
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
         doc = indexer.add_file(body.filepath, document_type=body.document_type, extra_metadata=body.extra_metadata or None)
@@ -71,7 +71,7 @@ async def remove_file(
     config = Depends(get_config),
 ) -> dict:
     """Remove a file from the index."""
-    repo = Repository(str(config.db_path))
+    repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
         found = indexer.remove_file(body.filepath)
