@@ -35,7 +35,7 @@ def add(ctx: dict, filepath: str, doi: str | None, skip_bib: bool, meta_pairs: t
     config = ctx["config"]
     repo = Repository(str(config.db_path))
     try:
-        indexer = Indexer(repo)
+        indexer = Indexer(repo, config.home)
         extra_meta = _parse_meta_pairs(meta_pairs)
         if doi:
             extra_meta["doi"] = doi
@@ -85,12 +85,13 @@ def upload(ctx: dict, file, name: str | None, directory: str, doi: str | None, s
 
     repo = Repository(str(config.db_path))
     try:
-        indexer = Indexer(repo)
+        indexer = Indexer(repo, config.home)
         extra_meta = _parse_meta_pairs(meta_pairs)
         if doi:
             extra_meta["doi"] = doi
 
-        doc = indexer.add_file(str(target_path), document_type="paper", extra_metadata=extra_meta or None, skip_bib=skip_bib)
+        rel_target = str(target_path.relative_to(config.home))
+        doc = indexer.add_file(rel_target, document_type="paper", extra_metadata=extra_meta or None, skip_bib=skip_bib)
         if doc:
             click.echo(f"Uploaded & indexed: {doc.path}")
         else:
@@ -133,7 +134,7 @@ def reference(ctx: dict, title: str, author: str | None, year: str | None, journ
     config = ctx["config"]
     repo = Repository(str(config.db_path))
     try:
-        indexer = Indexer(repo)
+        indexer = Indexer(repo, config.home)
         extra_meta = _parse_meta_pairs(meta_pairs) or {}
         extra_meta["title"] = title
         if author:
@@ -151,12 +152,7 @@ def reference(ctx: dict, title: str, author: str | None, year: str | None, journ
         if citation_key:
             extra_meta["citation_key"] = citation_key
 
-        # Resolve path relative to database home
-        fp = filepath or ""
-        if fp and not Path(fp).is_absolute():
-            fp = str(config.home / fp)
-
-        doc = indexer.add_reference(fp, document_type="paper", extra_metadata=extra_meta or None)
+        doc = indexer.add_reference(filepath, document_type="paper", extra_metadata=extra_meta or None)
         if doc:
             click.echo(f"Reference registered: {doc.path} (type={doc.document_type})")
         else:

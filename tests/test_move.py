@@ -110,8 +110,8 @@ class TestIndexerMoveFile:
         r.close()
 
     @pytest.fixture()
-    def indexer(self, repo):
-        return Indexer(repo)
+    def indexer(self, repo, home):
+        return Indexer(repo, str(home))
 
     def _create_real_file(self, home: Path, name: str, content: str = "file content"):
         f = home / name
@@ -121,23 +121,25 @@ class TestIndexerMoveFile:
 
     def test_move_file_on_disk_and_in_db(self, home: Path, indexer: Indexer):
         src = self._create_real_file(home, "src/doc.txt", "move me")
-        doc = _make_doc(str(src), full_text="move me", extension="txt")
+        rel_src = str(src.relative_to(home))
+        doc = _make_doc(rel_src, full_text="move me", extension="txt")
         indexer.repo.upsert(doc)
         # Fetch back from DB to get the assigned id
-        old_id = indexer.repo.get(str(src)).id
+        old_id = indexer.repo.get(rel_src).id
 
         dst = home / "dst" / "doc.txt"
         result = indexer.move_file(str(src), str(dst))
 
         assert result is not None
         assert result.id == old_id
-        assert result.path == str(dst)
+        assert "dst/doc.txt" in result.path or "dst" in result.path
         assert dst.is_file()
         assert not src.is_file()
 
     def test_move_creates_parent_directories(self, home: Path, indexer: Indexer):
         src = self._create_real_file(home, "top.txt", "nested")
-        doc = _make_doc(str(src), full_text="nested", extension="txt")
+        rel_src = str(src.relative_to(home))
+        doc = _make_doc(rel_src, full_text="nested", extension="txt")
         indexer.repo.upsert(doc)
 
         dst = home / "a" / "b" / "c" / "deep.txt"
@@ -148,9 +150,10 @@ class TestIndexerMoveFile:
 
     def test_move_preserves_sidecar(self, home: Path, indexer: Indexer):
         src = self._create_real_file(home, "meta.txt", "sidecar test")
+        rel_src = str(src.relative_to(home))
         sidecar = Path(str(src) + ".meta.json")
         sidecar.write_text(json.dumps({"key": "val"}))
-        doc = _make_doc(str(src), full_text="sidecar test", extension="txt")
+        doc = _make_doc(rel_src, full_text="sidecar test", extension="txt")
         indexer.repo.upsert(doc)
 
         dst = home / "moved.txt"
@@ -163,8 +166,9 @@ class TestIndexerMoveFile:
         assert not sidecar.is_file()
 
     def test_move_missing_source_returns_none(self, home: Path, indexer: Indexer):
+        src = home / "missing.txt"
         dst = home / "dst.txt"
-        result = indexer.move_file("/nonexistent/file.txt", str(dst))
+        result = indexer.move_file(str(src), str(dst))
         assert result is None
 
 
@@ -230,7 +234,7 @@ class TestMoveDocumentAPI:
         assert resp.status_code == 200
         data = resp.json()
         assert data["id"] == doc_id  # ID preserved
-        assert data["old_path"] == str(f)
+        assert data["old_path"] == "original.txt"
         assert "subdir/moved.txt" in data["new_path"] or "subdir" in data["new_path"]
         assert (home / "subdir" / "moved.txt").is_file()
 

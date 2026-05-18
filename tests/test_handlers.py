@@ -200,7 +200,7 @@ class TestPaperHandlerIntegration:
         db_path = tmp_path / "test.db"
         repo = Repository(str(db_path))
         try:
-            indexer = Indexer(repo)
+            indexer = Indexer(repo, str(tmp_path))
             doc = indexer.add_file(
                 str(sample_pdf),
                 document_type="paper",
@@ -228,7 +228,7 @@ class TestPaperHandlerIntegration:
         db_path = tmp_path / "test.db"
         repo = Repository(str(db_path))
         try:
-            indexer = Indexer(repo)
+            indexer = Indexer(repo, str(tmp_path))
             # Embedding a real DOI that maps to different metadata than our
             # test PDF — should succeed (user DOI takes precedence).
             doc = indexer.add_file(
@@ -256,7 +256,7 @@ class TestPaperHandlerIntegration:
         db_path = tmp_path / "test.db"
         repo = Repository(str(db_path))
         try:
-            indexer = Indexer(repo)
+            indexer = Indexer(repo, str(tmp_path))
             # Using skip_bib to avoid network dependency while verifying
             # the pipeline accepts doi in extra_metadata
             doc = indexer.add_file(
@@ -296,7 +296,7 @@ class TestTitleMismatchLogic:
 
         db_path = tmp_path / "test.db"
         repo = Repository(str(db_path))
-        handler = PaperDocumentHandler(repo)
+        handler = PaperDocumentHandler(repo, str(tmp_path))
         handler.extra_metadata = {}  # No DOI provided
 
         # Mock pdf2bib to return a different title
@@ -327,7 +327,7 @@ class TestTitleMismatchLogic:
 
         db_path = tmp_path / "test.db"
         repo = Repository(str(db_path))
-        handler = PaperDocumentHandler(repo)
+        handler = PaperDocumentHandler(repo, str(tmp_path))
         handler.extra_metadata = {}
 
         fake_result = {
@@ -358,7 +358,7 @@ class TestTitleMismatchLogic:
 
         db_path = tmp_path / "test.db"
         repo = Repository(str(db_path))
-        handler = PaperDocumentHandler(repo)
+        handler = PaperDocumentHandler(repo, str(tmp_path))
         handler.extra_metadata = {}
 
         fake_result = {
@@ -388,7 +388,7 @@ class TestTitleMismatchLogic:
 
         db_path = tmp_path / "test.db"
         repo = Repository(str(db_path))
-        handler = PaperDocumentHandler(repo)
+        handler = PaperDocumentHandler(repo, str(tmp_path))
         handler.extra_metadata = {"doi": "10.1234/user-provided"}
 
         fake_result = {
@@ -420,7 +420,7 @@ class TestTitleMismatchLogic:
 
         db_path = tmp_path / "test.db"
         repo = Repository(str(db_path))
-        handler = PaperDocumentHandler(repo)
+        handler = PaperDocumentHandler(repo, str(tmp_path))
         handler.extra_metadata = {}
 
         fake_result = {
@@ -481,7 +481,7 @@ class TestTextbookHandler:
         pdf_path = self._make_textbook_pdf(tmp_path)
         db_path = tmp_path / "test.db"
         repo = Repository(str(db_path))
-        handler = TextbookDocumentHandler(repo)
+        handler = TextbookDocumentHandler(repo, str(tmp_path))
 
         chapters = handler._detect_chapters(pdf_path, {})
         assert len(chapters) == 1
@@ -500,7 +500,7 @@ class TestTextbookHandler:
         pdf_path = self._make_textbook_pdf(tmp_path, toc)
         db_path = tmp_path / "test.db"
         repo = Repository(str(db_path))
-        handler = TextbookDocumentHandler(repo)
+        handler = TextbookDocumentHandler(repo, str(tmp_path))
 
         chapters = handler._detect_chapters(pdf_path, {})
         assert len(chapters) == 3
@@ -524,7 +524,7 @@ class TestTextbookHandler:
         pdf_path = self._make_textbook_pdf(tmp_path, toc)
         db_path = tmp_path / "test.db"
         repo = Repository(str(db_path))
-        handler = TextbookDocumentHandler(repo)
+        handler = TextbookDocumentHandler(repo, str(tmp_path))
 
         sidecar = {
             "chapters": [
@@ -551,7 +551,7 @@ class TestTextbookHandler:
         pdf_path = self._make_textbook_pdf(tmp_path, toc)
         db_path = tmp_path / "test.db"
         repo = Repository(str(db_path))
-        handler = TextbookDocumentHandler(repo)
+        handler = TextbookDocumentHandler(repo, str(tmp_path))
 
         doc = handler.handle(pdf_path)
         assert doc is not None
@@ -576,7 +576,7 @@ class TestTextbookHandler:
         repo = Repository(str(db_path))
 
         # First index — single chapter fallback
-        handler1 = TextbookDocumentHandler(repo)
+        handler1 = TextbookDocumentHandler(repo, str(tmp_path))
         doc1 = handler1.handle(pdf_path)
         assert len(repo.get_chapters(doc1.id)) == 1
 
@@ -587,7 +587,7 @@ class TestTextbookHandler:
         import shutil
         shutil.copy(str(pdf_path2), str(pdf_path))
 
-        handler2 = TextbookDocumentHandler(repo)
+        handler2 = TextbookDocumentHandler(repo, str(tmp_path))
         doc2 = handler2.handle(pdf_path)
         chapters = repo.get_chapters(doc2.id)
         assert len(chapters) == 2
@@ -602,7 +602,7 @@ class TestTextbookHandler:
         pdf_path = self._make_textbook_pdf(tmp_path)
         db_path = tmp_path / "test.db"
         repo = Repository(str(db_path))
-        handler = TextbookDocumentHandler(repo)
+        handler = TextbookDocumentHandler(repo, str(tmp_path))
 
         doc = handler.handle(pdf_path)
         chapters = repo.get_chapters(doc.id)

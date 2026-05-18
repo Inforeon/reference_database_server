@@ -23,8 +23,9 @@ class DocumentHandler:
     # Registered document-type slug
     document_type: str = "generic"
 
-    def __init__(self, repository: Repository) -> None:
+    def __init__(self, repository: Repository, home: str | Path) -> None:
         self.repo = repository
+        self.home = Path(home).resolve()
         self._extractors: dict[str, Any] = load_extractors()
         self.extra_metadata: dict[str, Any] = {}
 
@@ -106,6 +107,10 @@ class DocumentHandler:
         except IOError as e:
             logger.warning("Failed to save sidecar %s: %s", sidecar_path, e)
 
+    def _rel(self, filepath: Path) -> str:
+        """Convert an absolute path to a relative path from home."""
+        return str(filepath.resolve().relative_to(self.home))
+
     # ── public entry point ──────────────────────────────────────
 
     def handle(self, filepath: Path, reference: bool = False) -> Optional[Document]:
@@ -136,9 +141,9 @@ class DocumentHandler:
             merged_sidecar = {**sidecar_meta, **self.extra_metadata}
 
             doc = Document(
-                path=str(filepath.resolve()),
+                path=self._rel(filepath),
                 filename=filepath.name,
-                directory=str(filepath.parent.resolve()),
+                directory=self._rel(filepath.parent),
                 extension=filepath.suffix.lower().lstrip("."),
                 document_type=self.document_type,
                 size=stat.st_size,
@@ -180,18 +185,18 @@ class GenericDocumentHandler(DocumentHandler):
         try:
             merged_sidecar = dict(self.extra_metadata)
 
-            # Derive path components
+            # Derive path components (relative to home)
             fp = filepath.resolve()
             if fp.name and not fp.is_dir():
                 filename = fp.name
-                directory = str(fp.parent)
-                doc_path = str(fp)
+                directory = self._rel(fp.parent)
+                doc_path = self._rel(fp)
             else:
                 title = merged_sidecar.get("title", "untitled")
                 safe_key = re.sub(r"[^a-zA-Z0-9_-]", "_", title)
                 filename = f"{safe_key}.txt"
-                directory = str(fp)
-                doc_path = str(fp / filename)
+                directory = self._rel(fp)
+                doc_path = self._rel(fp / filename)
 
             # Build searchable full_text from metadata fields
             searchable_parts = []
@@ -505,14 +510,14 @@ class PaperDocumentHandler(DocumentHandler):
             fp = filepath.resolve()
             if fp.name and not fp.is_dir():
                 filename = fp.name
-                directory = str(fp.parent)
-                doc_path = str(fp)
+                directory = self._rel(fp.parent)
+                doc_path = self._rel(fp)
             else:
                 # No meaningful filename — fall back to citation key within
                 # the resolved directory.
                 filename = f"{safe_key}.bib"
-                directory = str(fp)
-                doc_path = str(fp / filename)
+                directory = self._rel(fp)
+                doc_path = self._rel(fp / filename)
 
             doc = Document(
                 path=doc_path,
@@ -594,9 +599,9 @@ class TextbookDocumentHandler(DocumentHandler):
             toc_text = "\n".join(toc_lines)
 
             doc = Document(
-                path=str(filepath.resolve()),
+                path=self._rel(filepath),
                 filename=filepath.name,
-                directory=str(filepath.parent.resolve()),
+                directory=self._rel(filepath.parent),
                 extension=filepath.suffix.lower().lstrip("."),
                 document_type=self.document_type,
                 source_type="file",
@@ -642,9 +647,9 @@ class TextbookDocumentHandler(DocumentHandler):
 
             dir_stat = dirpath.stat()
             doc = Document(
-                path=str(dirpath.resolve()),
+                path=self._rel(dirpath),
                 filename=dirpath.name,
-                directory=str(dirpath.parent.resolve()),
+                directory=self._rel(dirpath.parent),
                 extension="",
                 document_type=self.document_type,
                 source_type="directory",
@@ -913,18 +918,18 @@ class TextbookDocumentHandler(DocumentHandler):
         try:
             merged_sidecar = dict(self.extra_metadata)
 
-            # Derive path components
+            # Derive path components (relative to home)
             fp = filepath.resolve()
             if fp.name and not fp.is_dir():
                 filename = fp.name
-                directory = str(fp.parent)
-                doc_path = str(fp)
+                directory = self._rel(fp.parent)
+                doc_path = self._rel(fp)
             else:
                 title = merged_sidecar.get("title", "untitled")
                 safe_key = re.sub(r"[^a-zA-Z0-9_-]", "_", title)
                 filename = f"{safe_key}.txt"
-                directory = str(fp)
-                doc_path = str(fp / filename)
+                directory = self._rel(fp)
+                doc_path = self._rel(fp / filename)
 
             # Build searchable full_text from metadata fields
             searchable_parts = []
@@ -973,6 +978,7 @@ _HANDLER_MAP: dict[str, type[DocumentHandler]] = {
 def get_handler(
     document_type: str,
     repository: Repository,
+    home: str | Path,
     extra_metadata: dict[str, Any] | None = None,
     skip_bib: bool = False,
 ) -> DocumentHandler:
@@ -983,7 +989,7 @@ def get_handler(
     available metadata instead).
     """
     cls = _HANDLER_MAP.get(document_type, GenericDocumentHandler)
-    handler = cls(repository)
+    handler = cls(repository, home)
     if extra_metadata:
         handler.extra_metadata = dict(extra_metadata)
     if hasattr(handler, "skip_bib"):

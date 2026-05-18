@@ -157,9 +157,10 @@ class TestUpload:
         assert data["filename"] == "hello.txt"
         assert data["id"] is not None
 
-        # Verify the file was saved on disk
+        # Verify the file was saved on disk (path is now relative to db_home)
         import os
-        assert os.path.isfile(data["path"])
+        from pathlib import Path
+        assert os.path.isfile(str(Path(db_home) / data["path"]))
 
     def test_upload_in_subdirectory(self, client, db_home: str):
         """Upload to a subdirectory relative to DB home."""
@@ -271,9 +272,10 @@ class TestBibtexEndpoint:
 
 
 class TestPaperEndpoints:
-    def test_add_paper(self, client, db_home: str, tmp_path):
+    def test_add_paper(self, client, db_home: str):
         """POST /api/papers/add should index a file as a paper."""
-        file_path = tmp_path / "paper.pdf"
+        from pathlib import Path
+        file_path = Path(db_home) / "paper.pdf"
         file_path.write_text("pdf content")
 
         resp = client.post(
@@ -284,9 +286,10 @@ class TestPaperEndpoints:
         data = resp.json()
         assert data["filename"] == "paper.pdf"
 
-    def test_add_paper_with_doi(self, client, db_home: str, tmp_path):
+    def test_add_paper_with_doi(self, client, db_home: str):
         """POST /api/papers/add with DOI should include it in metadata."""
-        file_path = tmp_path / "doi_paper.pdf"
+        from pathlib import Path
+        file_path = Path(db_home) / "doi_paper.pdf"
         file_path.write_text("pdf content")
 
         resp = client.post(
@@ -335,9 +338,10 @@ class TestPaperEndpoints:
 
 
 class TestTextbookEndpoints:
-    def test_add_textbook(self, client, db_home: str, tmp_path):
+    def test_add_textbook(self, client, db_home: str):
         """POST /api/textbooks/add should index a file as a textbook."""
-        file_path = tmp_path / "textbook.pdf"
+        from pathlib import Path
+        file_path = Path(db_home) / "textbook.pdf"
         file_path.write_text("pdf content")
 
         resp = client.post(
@@ -964,8 +968,8 @@ class TestPaperReferenceEndpoints:
         assert resp.status_code == 200
         data = resp.json()
         assert data["filename"] == "mykey2024.bib"
-        # Path is a real path under db_home (not a synthetic ref:// URI)
-        assert db_home in data["path"]
+        # Path is now relative (stored as relative to db_home)
+        assert "mykey2024.bib" in data["path"]
 
         # Verify citation_key is stored in sidecar metadata
         doc_id = data["id"]

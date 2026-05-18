@@ -52,12 +52,10 @@ async def add_generic_reference(
 
     # Resolve filepath relative to database home
     filepath = body.filepath or ""
-    if not Path(filepath).is_absolute():
-        filepath = str(config.home / filepath)
 
     repo = Repository(str(config.db_path))
     try:
-        indexer = Indexer(repo)
+        indexer = Indexer(repo, config.home)
         doc = indexer.add_reference(
             filepath,
             document_type="generic",
@@ -116,8 +114,9 @@ async def upload_file(
 
     repo = Repository(str(config.db_path))
     try:
-        indexer = Indexer(repo)
-        doc = indexer.add_file(str(target_path), document_type="generic", extra_metadata=meta or None)
+        indexer = Indexer(repo, config.home)
+        rel_target = str(target_path.relative_to(config.home))
+        doc = indexer.add_file(rel_target, document_type="generic", extra_metadata=meta or None)
         if not doc:
             raise HTTPException(status_code=500, detail="Failed to index uploaded file.")
         indexed = repo.get(doc.path)
@@ -190,10 +189,11 @@ async def get_file(
         doc = repo.get_by_id(doc_id)
         if not doc:
             raise HTTPException(status_code=404, detail="Document not found")
-        if not Path(doc.path).is_file():
+        abs_path = config.home / doc.path
+        if not abs_path.is_file():
             raise HTTPException(status_code=404, detail="File not found on disk")
         return FileResponse(
-            path=doc.path,
+            path=str(abs_path),
             filename=doc.filename,
             media_type=f"application/{doc.extension}",
         )
@@ -214,7 +214,7 @@ async def patch_meta(
         if not doc:
             raise HTTPException(status_code=404, detail="Document not found")
 
-        sidecar = Path(str(doc.path) + ".meta.json")
+        sidecar = config.home / doc.path + ".meta.json"
         data = {}
         if sidecar.is_file():
             with open(sidecar, "r") as f:
@@ -226,7 +226,7 @@ async def patch_meta(
             json.dump(data, f, indent=2)
 
         # Re-index to pick up new sidecar
-        indexer = Indexer(repo)
+        indexer = Indexer(repo, config.home)
         indexer.add_file(doc.path)
 
         return {"updated": True, "key": body.key}
@@ -314,15 +314,16 @@ async def move_document(
         old_path = doc.path
 
         # Also validate the source is inside the database home
-        source_p = Path(old_path).resolve()
+        source_p = (root / old_path).resolve()
         if not str(source_p).startswith(str(root)):
             raise HTTPException(
                 status_code=400,
                 detail="Source document is outside the database home.",
             )
 
-        indexer = Indexer(repo)
-        new_doc = indexer.move_file(old_path, str(dest_p))
+        indexer = Indexer(repo, config.home)
+        dest_rel = str(dest_p.relative_to(root))
+        new_doc = indexer.move_file(old_path, dest_rel)
         if new_doc is None:
             raise HTTPException(status_code=404, detail="Source document not found in index")
 

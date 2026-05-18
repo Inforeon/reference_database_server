@@ -22,17 +22,19 @@ async def list_directory(
     directory, and directory entries inferred from nested document paths.
     Directory-type textbooks appear as directories with a ``document_id``.
     """
-    # Resolve the target directory relative to the database home.
+    # Guard against path traversal outside the database home.
     root = Path(config.home).resolve()
     target = (root / path).resolve()
 
-    # Guard against path traversal outside the database home.
     if not str(target).startswith(str(root)):
         raise HTTPException(status_code=400, detail="Path escapes database home")
 
+    # Pass the relative directory path (stored paths are relative to home)
+    rel_dir = str(target.relative_to(root)) if path else ""
+
     repo = Repository(str(config.db_path))
     try:
-        data = repo.list_directory(str(target))
+        data = repo.list_directory(rel_dir)
     finally:
         repo.close()
 

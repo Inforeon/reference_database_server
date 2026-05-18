@@ -146,6 +146,25 @@ class Repository:
         except Exception:
             pass
 
+        # --- Convert stored absolute paths to relative (portability migration) ---
+        try:
+            home = str(self.db_path.parent.resolve())
+            rows = cur.execute(
+                "SELECT id, path, directory FROM documents WHERE path LIKE ?",
+                (home + "%",),
+            ).fetchall()
+            if rows:
+                for row in rows:
+                    rel_path = row["path"][len(home):].lstrip("/")
+                    rel_dir = row["directory"][len(home):].lstrip("/")
+                    cur.execute(
+                        "UPDATE documents SET path = ?, directory = ? WHERE id = ?",
+                        (rel_path, rel_dir, row["id"]),
+                    )
+                self._conn.commit()
+        except Exception:
+            pass
+
     def _rebuild_chapters_table(self, cur: sqlite3.Cursor, existing_cols: list[str]) -> None:
         """Rebuild textbook_chapters with new columns, preserving existing data."""
         old_name = "textbook_chapters"

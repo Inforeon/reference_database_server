@@ -27,7 +27,7 @@ async def add_paper(
     """
     repo = Repository(str(config.db_path))
     try:
-        indexer = Indexer(repo)
+        indexer = Indexer(repo, config.home)
         extra_meta: dict[str, Any] = dict(body.extra_metadata or {})
         if body.doi:
             extra_meta["doi"] = body.doi
@@ -98,9 +98,10 @@ async def upload_paper(
 
     repo = Repository(str(config.db_path))
     try:
-        indexer = Indexer(repo)
+        indexer = Indexer(repo, config.home)
+        rel_target = str(target_path.relative_to(config.home))
         doc = indexer.add_file(
-            str(target_path),
+            rel_target,
             document_type="paper",
             extra_metadata=meta or None,
             skip_bib=skip_bib,
@@ -151,12 +152,10 @@ async def add_reference(
 
     # Resolve filepath relative to database home
     filepath = body.filepath or ""
-    if not Path(filepath).is_absolute():
-        filepath = str(config.home / filepath)
 
     repo = Repository(str(config.db_path))
     try:
-        indexer = Indexer(repo)
+        indexer = Indexer(repo, config.home)
         doc = indexer.add_reference(
             filepath,
             document_type="paper",

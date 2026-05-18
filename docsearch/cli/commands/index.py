@@ -31,7 +31,7 @@ def scan(ctx: dict, dirpath: str, no_recursive: bool) -> None:
     config = ctx["config"]
     repo = Repository(str(config.db_path))
     try:
-        indexer = Indexer(repo)
+        indexer = Indexer(repo, config.home)
         stats = indexer.scan_directory(dirpath, recursive=not no_recursive, document_type="generic")
         click.echo(f"Scanned: {dirpath}")
         click.echo(f"  Added:     {stats['added']}")
@@ -54,7 +54,7 @@ def add(ctx: dict, filepath: str) -> None:
     config = ctx["config"]
     repo = Repository(str(config.db_path))
     try:
-        indexer = Indexer(repo)
+        indexer = Indexer(repo, config.home)
         doc = indexer.add_file(filepath, document_type="generic")
         if doc:
             click.echo(f"Indexed: {doc.path} (type={doc.document_type})")
@@ -72,7 +72,7 @@ def remove(ctx: dict, filepath: str) -> None:
     config = ctx["config"]
     repo = Repository(str(config.db_path))
     try:
-        indexer = Indexer(repo)
+        indexer = Indexer(repo, config.home)
         if indexer.remove_file(filepath):
             click.echo(f"Removed: {filepath}")
         else:
@@ -116,10 +116,13 @@ def move(ctx: dict, source: str, destination: str) -> None:
             click.echo("Source file is outside the database home.", err=True)
             return
 
-        indexer = Indexer(repo)
-        new_doc = indexer.move_file(str(source_p), str(dest_p))
+        source_rel = str(source_p.relative_to(root))
+        dest_rel = str(dest_p.relative_to(root))
+
+        indexer = Indexer(repo, config.home)
+        new_doc = indexer.move_file(source_rel, dest_rel)
         if new_doc:
-            click.echo(f"Moved: {source_p} → {new_doc.path}")
+            click.echo(f"Moved: {source} → {new_doc.path}")
         else:
             click.echo(f"Not found in index: {source}", err=True)
     finally:
@@ -134,7 +137,7 @@ def status(ctx: dict, filepath: str) -> None:
     config = ctx["config"]
     repo = Repository(str(config.db_path))
     try:
-        indexer = Indexer(repo)
+        indexer = Indexer(repo, config.home)
         needs = indexer.needs_reindex(filepath)
         if needs:
             click.echo(f"{filepath} → needs indexing")

@@ -27,7 +27,7 @@ async def scan_dir(
     """
     repo = Repository(str(config.db_path))
     try:
-        indexer = Indexer(repo)
+        indexer = Indexer(repo, config.home)
         stats = indexer.scan_directory(body.dirpath, recursive=body.recursive, document_type=body.document_type, extra_metadata=body.extra_metadata or None)
         return IndexStats(**stats)
     except NotADirectoryError as e:
@@ -48,7 +48,7 @@ async def add_file(
     """
     repo = Repository(str(config.db_path))
     try:
-        indexer = Indexer(repo)
+        indexer = Indexer(repo, config.home)
         doc = indexer.add_file(body.filepath, document_type=body.document_type, extra_metadata=body.extra_metadata or None)
         if doc:
             indexed = repo.get(doc.path)
@@ -73,7 +73,7 @@ async def remove_file(
     """Remove a file from the index."""
     repo = Repository(str(config.db_path))
     try:
-        indexer = Indexer(repo)
+        indexer = Indexer(repo, config.home)
         found = indexer.remove_file(body.filepath)
         return {"removed": found}
     finally:

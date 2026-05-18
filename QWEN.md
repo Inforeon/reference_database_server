@@ -30,7 +30,8 @@ docsearch/
 
 The **database home** is an explicit root directory under which all data lives:
 - The SQLite database sits at `{home}/docsearch.db`
-- All document paths are resolved relative to the database home
+- All document paths are stored **relative** to the database home (portable across machines)
+- Absolute paths are resolved dynamically as `config.home / doc.path` for filesystem operations
 - File uploads are scoped within the database home
 
 | | Default | Override |
@@ -38,7 +39,7 @@ The **database home** is an explicit root directory under which all data lives:
 | CLI | Current working directory (`.`) | `--home PATH` |
 | REST API | Current working directory (`.`) | `DOCSEARCH_HOME` env var |
 
-See `docsearch/config.py` — the `Config` class owns this logic.
+See `docsearch/config.py` — the `Config` class owns this logic with `resolve_path()` (user→absolute) and `relative_path()` (absolute→relative) helpers.
 
 ## Document Types
 
@@ -61,7 +62,7 @@ Documents have a `source_type` column indicating their origin:
 |---|---|---|
 | `file` | All types | Document backed by a file on disk (implicit default when not set) |
 | `directory` | Textbooks only | Directory-based textbook with one file per chapter |
-| `reference` | Papers only | Metadata-only entry with no associated file (synthetic `ref://citation_key` path) |
+| `reference` | Papers only | Metadata-only entry with no associated file (uses `{citation_key}.bib` as relative path) |
 
 This generalizes the former `textbook_variant` column (renamed in-place via migration).
 
@@ -76,7 +77,7 @@ This generalizes the former `textbook_variant` column (renamed in-place via migr
   - `GenericDocumentHandler` — default behavior, identical to legacy indexer
   - `PaperDocumentHandler` — embeds DOI via `pdf2doi`, runs pdf2bib for bibliographic metadata, validates title match between PDF metadata and extracted citation (title mismatch guard), moves pdf2bib author list to `authors_bib` key, stores raw bibtex string in sidecar. Falls back to `_generate_bibtex_from_metadata()` when `skip_bib=True`
   - `TextbookDocumentHandler` — dispatches on file vs directory. File-type: extracts PDF metadata, detects chapters via TOC/sidecar, inserts page-range chapters. Directory-type: enumerates first-level files as chapters, loads/saves `<dirname>.meta.json` sidecar inside directory, alphabetical default ordering overridable via sidecar `chapters` key
-  - `ReferenceDocumentHandler` — creates metadata-only paper entries with `source_type='reference'`. Generates synthetic `ref://citation_key` path for uniqueness. Populates `full_text` from title/author/journal/booktitle/abstract for FTS searchability. Auto-generates BibTeX when not provided
+  - `ReferenceDocumentHandler` — creates metadata-only paper entries with `source_type='reference'`. Uses `{citation_key}.bib` as relative path for uniqueness. Populates `full_text` from title/author/journal/booktitle/abstract for FTS searchability. Auto-generates BibTeX when not provided
   - Helper functions: `_normalize_title()`, `_titles_match()`, `_format_author_dict()`, `_format_authors_bib()`, `_generate_bibtex_from_metadata()`
 
 ### Extractors (`docsearch/extractors/`)
@@ -211,7 +212,7 @@ Located in `tests/`, run with `pytest`.
 - mypy strict mode enabled; ignore missing imports
 - Migration SQL in `migrations/` (schema also embedded in `repository.py`)
 - Test PDFs are generated programmatically (no binary fixtures committed to repo)
-- References use synthetic `ref://citation_key` paths for uniqueness in the documents table
+- References use `{citation_key}.bib` as relative path for uniqueness in the documents table
 
 ## Known Limitations
 

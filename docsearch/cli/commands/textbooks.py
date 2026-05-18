@@ -28,7 +28,7 @@ def add(ctx: dict, filepath: str, meta_pairs: tuple[str, ...]) -> None:
     config = ctx["config"]
     repo = Repository(str(config.db_path))
     try:
-        indexer = Indexer(repo)
+        indexer = Indexer(repo, config.home)
         extra_meta = _parse_meta_pairs(meta_pairs)
 
         doc = indexer.add_file(filepath, document_type="textbook", extra_metadata=extra_meta or None)
@@ -74,10 +74,11 @@ def upload(ctx: dict, file, name: str | None, directory: str, meta_pairs: tuple[
 
     repo = Repository(str(config.db_path))
     try:
-        indexer = Indexer(repo)
+        indexer = Indexer(repo, config.home)
         extra_meta = _parse_meta_pairs(meta_pairs)
 
-        doc = indexer.add_file(str(target_path), document_type="textbook", extra_metadata=extra_meta or None)
+        rel_target = str(target_path.relative_to(config.home))
+        doc = indexer.add_file(rel_target, document_type="textbook", extra_metadata=extra_meta or None)
         if doc:
             click.echo(f"Uploaded & indexed: {doc.path}")
         else:
@@ -115,7 +116,7 @@ def reference(ctx: dict, title: str, author: str | None, year: str | None, publi
     config = ctx["config"]
     repo = Repository(str(config.db_path))
     try:
-        indexer = Indexer(repo)
+        indexer = Indexer(repo, config.home)
         extra_meta = _parse_meta_pairs(meta_pairs) or {}
         extra_meta["title"] = title
         if author:
@@ -129,12 +130,7 @@ def reference(ctx: dict, title: str, author: str | None, year: str | None, publi
         if url:
             extra_meta["url"] = url
 
-        # Resolve path relative to database home
-        fp = filepath or ""
-        if fp and not Path(fp).is_absolute():
-            fp = str(config.home / fp)
-
-        doc = indexer.add_reference(fp, document_type="textbook", extra_metadata=extra_meta or None)
+        doc = indexer.add_reference(filepath, document_type="textbook", extra_metadata=extra_meta or None)
         if doc:
             click.echo(f"Reference registered: {doc.path} (type={doc.document_type})")
         else:
@@ -153,7 +149,10 @@ def chapters(ctx: dict, filepath: str) -> None:
     config = ctx["config"]
     repo = Repository(str(config.db_path))
     try:
-        doc = repo.get(filepath)
+        # Convert user-supplied path to relative for DB lookup
+        abs_p = Path(filepath).resolve()
+        rel_p = str(abs_p.relative_to(config.home))
+        doc = repo.get(rel_p)
         if not doc:
             click.echo(f"Not indexed: {filepath}", err=True)
             return
@@ -185,7 +184,10 @@ def chapter(ctx: dict, filepath: str, index: int) -> None:
     config = ctx["config"]
     repo = Repository(str(config.db_path))
     try:
-        doc = repo.get(filepath)
+        # Convert user-supplied path to relative for DB lookup
+        abs_p = Path(filepath).resolve()
+        rel_p = str(abs_p.relative_to(config.home))
+        doc = repo.get(rel_p)
         if not doc:
             click.echo(f"Not indexed: {filepath}", err=True)
             return

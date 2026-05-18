@@ -33,9 +33,12 @@ def ls(ctx: dict, path: str, output_format: str) -> None:
         click.echo("Error: path escapes database home", err=True)
         raise SystemExit(1)
 
+    # Pass the relative directory path (stored paths are relative to home)
+    rel_dir = str(target.relative_to(root)) if path else ""
+
     repo = Repository(str(config.db_path))
     try:
-        data = repo.list_directory(str(target))
+        data = repo.list_directory(rel_dir)
     finally:
         repo.close()
 

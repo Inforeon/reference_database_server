@@ -18,11 +18,14 @@ class Indexer:
     """Scans directories and indexes documents into the repository.
 
     Delegates per-document processing to :class:`DocumentHandler` subclasses
-    selected by ``document_type``.
+    selected by ``document_type``.  All paths stored in the database are
+    relative to ``home``; absolute paths are resolved only for filesystem
+    operations.
     """
 
-    def __init__(self, repository: Repository):
+    def __init__(self, repository: Repository, home: str | Path):
         self.repo = repository
+        self.home = Path(home).resolve()
         self._extractors: dict[str, Any] = load_extractors()
 
     # ── public API ───────────────────────────────────────────────
@@ -45,7 +48,7 @@ class Indexer:
         ``skip_bib`` skips pdf2bib processing for papers (generates bibtex
         from available metadata instead).
         """
-        p = Path(filepath).resolve()
+        p = (self.home / filepath).resolve()
         # Allow directories for textbook type (chapter-per-file variant)
         if document_type == "textbook":
             if not p.exists():
@@ -53,7 +56,7 @@ class Indexer:
         elif not p.is_file():
             raise FileNotFoundError(f"File not found: {p}")
 
-        handler = get_handler(document_type, self.repo, extra_metadata=extra_metadata, skip_bib=skip_bib)
+        handler = get_handler(document_type, self.repo, self.home, extra_metadata=extra_metadata, skip_bib=skip_bib)
         return handler.handle(p)
 
     def add_reference(
@@ -78,17 +81,18 @@ class Indexer:
         ``skip_bib`` has no effect for references (BibTeX is always generated
         from metadata when not provided).
         """
-        p = Path(filepath).resolve()
+        p = (self.home / filepath).resolve()
         # Ensure parent directories exist so the path resolves cleanly
         p.parent.mkdir(parents=True, exist_ok=True)
 
-        handler = get_handler(document_type, self.repo, extra_metadata=extra_metadata, skip_bib=skip_bib)
+        handler = get_handler(document_type, self.repo, self.home, extra_metadata=extra_metadata, skip_bib=skip_bib)
         return handler.handle(p, reference=True)
 
     def remove_file(self, filepath: str | Path) -> bool:
         """Remove a single file from the index."""
-        p = Path(filepath).resolve()
-        return self.repo.remove(str(p))
+        p = (self.home / filepath).resolve()
+        rel = str(p.relative_to(self.home))
+        return self.repo.remove(rel)
 
     def move_file(
         self,
@@ -102,10 +106,12 @@ class Indexer:
         internal ``id`` is preserved.  Returns the updated Document or None
         when the source was not found.
         """
-        old_p = Path(old_filepath).resolve()
-        new_p = Path(new_filepath).resolve()
+        old_p = (self.home / old_filepath).resolve()
+        new_p = (self.home / new_filepath).resolve()
+        old_rel = str(old_p.relative_to(self.home))
+        new_rel = str(new_p.relative_to(self.home))
 
-        doc = self.repo.get(str(old_p))
+        doc = self.repo.get(old_rel)
         if doc is None:
             return None
 
@@ -122,10 +128,10 @@ class Indexer:
             shutil.move(str(old_sidecar), str(new_sidecar))
 
         # Update DB row in-place (preserves id)
-        self.repo.rename(str(old_p), str(new_p))
+        self.repo.rename(old_rel, new_rel)
 
         # Return the refreshed document
-        return self.repo.get(str(new_p))
+        return self.repo.get(new_rel)
 
     def scan_directory(
         self,
@@ -143,7 +149,7 @@ class Indexer:
         (defaults to ``"generic"``). ``extra_metadata`` is applied to every
         file in the scan. ``skip_bib`` skips pdf2bib for papers.
         """
-        root = Path(dirpath).resolve()
+        root = (self.home / dirpath).resolve()
         if not root.is_dir():
             raise NotADirectoryError(f"Not a directory: {root}")
 
@@ -155,7 +161,7 @@ class Indexer:
             "errors": 0,
         }
 
-        handler = get_handler(document_type, self.repo, extra_metadata=extra_metadata, skip_bib=skip_bib)
+        handler = get_handler(document_type, self.repo, self.home, extra_metadata=extra_metadata, skip_bib=skip_bib)
 
         # Collect supported files on disk
         iterator = root.rglob("*") if recursive else root.iterdir()
@@ -171,25 +177,29 @@ class Indexer:
             if ext in self._extractors:
                 disk_files.append(p.resolve())
 
-        disk_paths = {str(p) for p in disk_files}
+        # Use relative paths for DB comparisons
+        def to_rel(p: Path) -> str:
+            return str(p.relative_to(self.home))
+
+        disk_rels = {to_rel(p) for p in disk_files}
         indexed_paths = set(self.repo.all_paths())
 
         # New files
-        for path_str in disk_paths - indexed_paths:
-            doc = handler.handle(Path(path_str))
+        for rel_str in disk_rels - indexed_paths:
+            doc = handler.handle(self.home / rel_str)
             if doc:
                 stats["added"] += 1
             else:
                 stats["errors"] += 1
 
         # Changed files — check hash
-        for path_str in disk_paths & indexed_paths:
-            p = Path(path_str)
+        for rel_str in disk_rels & indexed_paths:
+            abs_p = self.home / rel_str
             try:
-                current_hash = self._compute_hash(p)
-                doc = self.repo.get(path_str)
+                current_hash = self._compute_hash(abs_p)
+                doc = self.repo.get(rel_str)
                 if doc and doc.content_hash != current_hash:
-                    new_doc = handler.handle(p)
+                    new_doc = handler.handle(abs_p)
                     if new_doc:
                         stats["updated"] += 1
                     else:
@@ -198,9 +208,9 @@ class Indexer:
                 stats["errors"] += 1
 
         # Deleted files (only within scanned root)
-        root_str = str(root)
-        for path_str in indexed_paths - disk_paths:
-            if path_str.startswith(root_str):
+        root_rel = to_rel(root)
+        for path_str in indexed_paths - disk_rels:
+            if path_str == root_rel or path_str.startswith(root_rel + "/"):
                 self.repo.remove(path_str)
                 stats["removed"] += 1
 
@@ -208,15 +218,15 @@ class Indexer:
 
     def needs_reindex(self, filepath: str | Path) -> bool:
         """Check whether a file is new or has been modified since last index."""
-        p = Path(filepath).resolve()
-        path_str = str(p)
+        p = (self.home / filepath).resolve()
+        rel = str(p.relative_to(self.home))
 
-        if not self.repo.exists(path_str):
+        if not self.repo.exists(rel):
             return True
 
         try:
             current_hash = self._compute_hash(p)
-            doc = self.repo.get(path_str)
+            doc = self.repo.get(rel)
             return doc is None or doc.content_hash != current_hash
         except Exception:
             return True
