@@ -107,6 +107,7 @@ async def upload_textbook(
     directory: str = "",
     filename: str | None = None,
     extra_metadata: str | None = None,
+    chapter_breakpoints: str | None = Query(None, description="Chapter breakpoints for file-type textbooks. JSON dict {title: page} or list of page numbers."),
     variant: str = Query("file", description="'file' for single-PDF textbook, 'directory' to create empty directory textbook"),
     file: UploadFile | None = File(None),
     config = Depends(get_config),
@@ -117,6 +118,8 @@ async def upload_textbook(
     at the specified path with a Document entry so chapters can be uploaded later.
 
     ``extra_metadata`` is a JSON-encoded dict of additional key/value pairs.
+    ``chapter_breakpoints`` (file-type only) is a dict ``{"Chapter 1": 0, "Methods": 15}``
+    or a list ``[0, 15, 42]`` of zero-indexed page breakpoints.
     """
     meta: dict[str, Any] = {}
     if extra_metadata:
@@ -124,6 +127,63 @@ async def upload_textbook(
             meta = json.loads(extra_metadata)
         except json.JSONDecodeError:
             raise HTTPException(status_code=400, detail="extra_metadata must be valid JSON.")
+
+    # Process chapter_breakpoints into chapters metadata
+    if chapter_breakpoints is not None:
+        if variant == "directory":
+            raise HTTPException(
+                status_code=400,
+                detail="chapter_breakpoints is only valid for file-type textbooks.",
+            )
+        try:
+            breakpoints = json.loads(chapter_breakpoints)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="chapter_breakpoints must be valid JSON.")
+
+        if isinstance(breakpoints, dict):
+            # Dict: {"chp1": 2, "chp2": 5, ..., "last": None}
+            # Values are end pages (exclusive); sorted by value (None last).
+            # Each chapter runs from previous end to its own end_page.
+            sorted_items = sorted(
+                breakpoints.items(),
+                key=lambda x: (x[1] is None, x[1] or 0),
+            )
+            chapters = []
+            prev_end = 0
+            for i, (title, end_page) in enumerate(sorted_items):
+                chapters.append({
+                    "title": title,
+                    "start_page": prev_end,
+                    "end_page": end_page,  # None means "to end of book"
+                })
+                if end_page is not None:
+                    prev_end = end_page
+            meta["chapters"] = chapters
+
+        elif isinstance(breakpoints, list):
+            # List: [2, 5, 6, 9] — page boundaries implying N+1 chapters.
+            # [0..breakpoints[0], breakpoints[0]..breakpoints[1], ..., breakpoints[-1]..end
+            chapters = []
+            prev_end = 0
+            for i, bp in enumerate(breakpoints):
+                chapters.append({
+                    "title": f"Chapter {i + 1}",
+                    "start_page": prev_end,
+                    "end_page": bp,
+                })
+                prev_end = bp
+            # Final chapter from last breakpoint to end of book
+            chapters.append({
+                "title": f"Chapter {len(breakpoints) + 1}",
+                "start_page": prev_end,
+                "end_page": None,
+            })
+            meta["chapters"] = chapters
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="chapter_breakpoints must be a JSON object or array.",
+            )
 
     root = config.home
     target_dir = root / directory if directory else root
@@ -136,8 +196,17 @@ async def upload_textbook(
         if not target_dir.is_dir():
             raise HTTPException(status_code=400, detail=f"Directory does not exist: {target_dir}")
 
-        name = filename if filename else "textbook"
-        textbook_dir = target_dir / name
+        if not filename:
+            raise HTTPException(
+                status_code=400,
+                detail="A 'filename' query parameter is required for directory-type textbooks.",
+            )
+
+        # Use the directory name as the default title if not provided
+        if not meta.get("title"):
+            meta["title"] = filename
+
+        textbook_dir = target_dir / filename
         textbook_dir.mkdir(parents=True, exist_ok=True)
 
         repo = Repository(str(config.db_path), config.home)

@@ -589,7 +589,7 @@ class TextbookDocumentHandler(DocumentHandler):
 
             merged_sidecar = {**sidecar_meta, **self.extra_metadata}
 
-            chapters_info = self._detect_chapters(filepath, sidecar_meta)
+            chapters_info = self._detect_chapters(filepath, merged_sidecar)
 
             toc_lines = [extracted_meta.get("title", filepath.stem)]
             for ch in chapters_info:
@@ -821,6 +821,10 @@ class TextbookDocumentHandler(DocumentHandler):
                     "end_page": entry.get("end_page"),
                 })
             if chapters:
+                # Fill in missing end_pages from next chapter's start_page
+                for i in range(len(chapters) - 1):
+                    if chapters[i]["end_page"] is None and chapters[i + 1]["start_page"] is not None:
+                        chapters[i]["end_page"] = chapters[i + 1]["start_page"]
                 # Ensure last chapter extends to end of book
                 page_count = self._get_page_count(filepath)
                 if page_count and chapters[-1]["end_page"] is None:

@@ -179,8 +179,12 @@ All routes share a single `get_config()` dependency from `server/dependencies.py
 | POST | `/api/documents/papers/upload` | Upload paper (multipart, query: `doi`, `skip_bib`, `extra_metadata`, `directory`, `filename`) |
 | POST | `/api/documents/papers/reference` | Register metadata-only reference body: `{title, author?, year?, journal?, booktitle?, doi?, url?, bibtex?, citation_key?, extra_metadata?}` |
 | POST | `/api/documents/textbooks/add` | Add textbook body: `{filepath, extra_metadata?}` |
-| POST | `/api/documents/textbooks/upload` | Upload textbook (multipart, query: `extra_metadata`, `directory`, `filename`, `variant`) |
+| POST | `/api/documents/textbooks/upload` | Upload textbook (multipart, query: `extra_metadata`, `directory`, `filename`, `variant`, `chapter_breakpoints`) |
 | POST | `/api/documents/{id}/chapters/upload` | Upload chapter to directory-type textbook (multipart, query: `filename`, `chapter_index`) |
+
+**Chapter breakpoints** (`chapter_breakpoints`, file-type only): JSON list `[5,10,15]` (N boundaries → N+1 chapters) or dict `{"Intro":5,"Methods":10,"Results":null}` (keys are titles, values are end pages; `null` means "to end of book). First chapter always starts at page 0.
+
+**Directory-type textbooks** (`variant=directory`) require the `filename` query parameter — it determines the directory name and is used as the default title in metadata.
 
 Pydantic request/response schemas in `server/schemas.py`. `DocumentResponse` includes `id`, `document_type`, and `source_type`. Upload endpoints save files relative to the database home with strict path-traversal protection.
 

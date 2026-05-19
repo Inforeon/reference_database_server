@@ -88,7 +88,7 @@ class Chapter:
     chapter_index: int = 0
     title: str = ""
     chapter_type: Optional[str] = "range"  # 'range' | 'file'
-    start_page: Optional[int] = 1
+    start_page: Optional[int] = 0
     end_page: Optional[int] = 0
     page_count: Optional[int] = None
     file_path: Optional[str] = None  # relative path within textbook dir (file-type only)
@@ -116,8 +116,8 @@ class Chapter:
                 chapter_index=row["chapter_index"] if "chapter_index" in keys else 0,
                 title=row["title"] if "title" in keys and row["title"] else "",
                 chapter_type=row["chapter_type"] if "chapter_type" in keys and row["chapter_type"] else "range",
-                start_page=row["start_page"] if "start_page" in keys and row["start_page"] else None,
-                end_page=row["end_page"] if "end_page" in keys and row["end_page"] else None,
+                start_page=row["start_page"] if "start_page" in keys and row["start_page"] is not None else 0,
+                end_page=row["end_page"] if "end_page" in keys and row["end_page"] is not None else None,
                 page_count=row["page_count"] if "page_count" in keys and row["page_count"] else None,
                 file_path=row["file_path"] if "file_path" in keys and row["file_path"] else None,
                 metadata=json.loads(meta_raw) if meta_raw else {},
@@ -131,8 +131,8 @@ class Chapter:
             chapter_index=row[2] if len(row) > 2 else 0,
             title=row[3] if len(row) > 3 and row[3] else "",
             chapter_type=row[4] if len(row) > 4 and row[4] else "range",
-            start_page=row[5] if len(row) > 5 and row[5] else None,
-            end_page=row[6] if len(row) > 6 and row[6] else None,
+            start_page=row[5] if len(row) > 5 and row[5] is not None else 0,
+            end_page=row[6] if len(row) > 6 and row[6] is not None else None,
             page_count=row[7] if len(row) > 7 and row[7] else None,
             file_path=row[8] if len(row) > 8 and row[8] else None,
             metadata=json.loads(row[9]) if len(row) > 9 and row[9] else {},

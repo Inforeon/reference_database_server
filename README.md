@@ -235,8 +235,30 @@ Textbook-specific endpoints nested under `/documents`.
 | Method | Endpoint | Description |
 |---|---|---|
 | `POST` | `/documents/textbooks/add` | Add textbook body: `{filepath, extra_metadata}` → `{id, path, filename}` |
-| `POST` | `/documents/textbooks/upload` | Upload textbook (multipart, query: `extra_metadata`, `directory`, `filename`, `variant`) → `{id, path, filename}` |
+| `POST` | `/documents/textbooks/upload` | Upload textbook (multipart, query: `extra_metadata`, `directory`, `filename`, `variant`, `chapter_breakpoints`) → `{id, path, filename}` |
 | `POST` | `/documents/{id}/chapters/upload` | Upload chapter file to directory-type textbook (multipart, query: `filename`, `chapter_index`) → chapter metadata |
+
+#### Chapter Breakpoints
+
+The `chapter_breakpoints` query parameter (file-type textbooks only) lets you split a PDF into chapters at upload time without writing a sidecar file. Two formats are accepted:
+
+**List** — N page boundaries imply N+1 chapters (`[0..bp₀], [bp₀..bp₁], …, [bp₋₁..end]`):
+```
+chapter_breakpoints=[5,10,15]
+# → Chapter 1 (pp. 0–5), Chapter 2 (pp. 5–10), Chapter 3 (pp. 10–15), Chapter 4 (pp. 15–end)
+```
+
+**Dict** — Keys are chapter names, values are end pages (exclusive); `null` means "to end of book":
+```
+chapter_breakpoints={"Introduction":5,"Methods":10,"Results":null}
+# → Introduction (pp. 0–5), Methods (pp. 5–10), Results (pp. 10–end)
+```
+
+Chapters are sorted by page order. The first chapter always starts at page 0.
+
+#### Directory-Type Textbooks
+
+Creating a directory-type textbook (`variant=directory`) requires the `filename` query parameter — it determines the directory name and is used as the default title in metadata.
 
 ## Architecture
 

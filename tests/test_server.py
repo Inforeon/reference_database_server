@@ -378,6 +378,93 @@ class TestTextbookEndpoints:
         )
         assert resp.status_code == 400
 
+    def test_upload_textbook_with_list_breakpoints(self, client, db_home: str):
+        """Upload with chapter_breakpoints as a list of page boundaries (N breaks → N+1 chapters)."""
+        import fitz
+        from pathlib import Path
+
+        home = Path(db_home)
+        pdf_path = home / "breakpoint_book.pdf"
+        doc = fitz.open()
+        for i in range(20):
+            page = doc.new_page()
+            page.insert_text((72, 72), f"Page {i} content.")
+        doc.set_metadata({"title": "Breakpoint Book"})
+        doc.save(str(pdf_path))
+        doc.close()
+
+        # [5, 10] implies 3 chapters: [0..5], [5..10], [10..end]
+        resp = client.post(
+            "/api/documents/textbooks/upload",
+            files={"file": open(pdf_path, "rb")},
+            params={"chapter_breakpoints": "[5, 10]"},
+        )
+        assert resp.status_code == 200
+        doc_id = resp.json()["id"]
+
+        chapters_resp = client.get(f"/api/documents/textbooks/{doc_id}/chapters")
+        assert chapters_resp.status_code == 200
+        chapters = chapters_resp.json()
+        assert len(chapters) == 3
+        assert chapters[0]["title"] == "Chapter 1"
+        assert chapters[0]["start_page"] == 0
+        assert chapters[0]["end_page"] == 5
+        assert chapters[1]["title"] == "Chapter 2"
+        assert chapters[1]["start_page"] == 5
+        assert chapters[1]["end_page"] == 10
+        assert chapters[2]["title"] == "Chapter 3"
+        assert chapters[2]["start_page"] == 10
+        assert chapters[2]["end_page"] == 20  # auto-filled to page count
+
+    def test_upload_textbook_with_dict_breakpoints(self, client, db_home: str):
+        """Upload with chapter_breakpoints as a dict of title->end_page."""
+        import fitz
+        from pathlib import Path
+
+        home = Path(db_home)
+        pdf_path = home / "named_breakpoint_book.pdf"
+        doc = fitz.open()
+        for i in range(20):
+            page = doc.new_page()
+            page.insert_text((72, 72), f"Page {i} content.")
+        doc.set_metadata({"title": "Named Breakpoint Book"})
+        doc.save(str(pdf_path))
+        doc.close()
+
+        # Dict values are end pages; None means "to end of book".
+        # Chapters are sorted by end_page order; each runs from previous end to its own.
+        breakpoints = '{"Introduction": 8, "Methods": 15, "Conclusion": null}'
+        resp = client.post(
+            "/api/documents/textbooks/upload",
+            files={"file": open(pdf_path, "rb")},
+            params={"chapter_breakpoints": breakpoints},
+        )
+        assert resp.status_code == 200
+        doc_id = resp.json()["id"]
+
+        chapters_resp = client.get(f"/api/documents/textbooks/{doc_id}/chapters")
+        assert chapters_resp.status_code == 200
+        chapters = chapters_resp.json()
+        assert len(chapters) == 3
+        assert chapters[0]["title"] == "Introduction"
+        assert chapters[0]["start_page"] == 0
+        assert chapters[0]["end_page"] == 8
+        assert chapters[1]["title"] == "Methods"
+        assert chapters[1]["start_page"] == 8
+        assert chapters[1]["end_page"] == 15
+        assert chapters[2]["title"] == "Conclusion"
+        assert chapters[2]["start_page"] == 15
+        assert chapters[2]["end_page"] == 20  # None auto-filled to page count
+
+    def test_upload_textbook_breakpoints_rejects_directory_variant(self, client, db_home: str):
+        """chapter_breakpoints on variant=directory returns 400."""
+        resp = client.post(
+            "/api/documents/textbooks/upload",
+            params={"variant": "directory", "filename": "bad_book", "chapter_breakpoints": "[0, 5]"},
+        )
+        assert resp.status_code == 400
+        assert "file-type" in resp.json()["detail"].lower()
+
 
 class TestChapterEndpoints:
     """Tests for textbook chapter API endpoints."""
@@ -515,13 +602,25 @@ class TestDirectoryTextbookEndpoints:
         from pathlib import Path
         assert Path(db_home) / "my_book" is not None
 
-    def test_upload_empty_directory_textbook_default_name(self, client, db_home: str):
-        """Without filename, default name 'textbook' is used."""
+    def test_upload_empty_directory_textbook_requires_filename(self, client, db_home: str):
+        """Without filename, directory-type textbook upload returns 400."""
         resp = client.post(
             "/api/documents/textbooks/upload?variant=directory",
         )
+        assert resp.status_code == 400
+        assert "filename" in resp.json()["detail"].lower()
+
+    def test_upload_empty_directory_textbook_uses_filename_as_title(self, client, db_home: str):
+        """When no title in extra_metadata, the filename is used as default title."""
+        resp = client.post(
+            "/api/documents/textbooks/upload?variant=directory&filename=my_book",
+        )
         assert resp.status_code == 200
-        assert resp.json()["filename"] == "textbook"
+        doc_id = resp.json()["id"]
+        # Check that the title in metadata is set to the filename
+        meta_resp = client.get(f"/api/documents/{doc_id}/meta")
+        assert meta_resp.status_code == 200
+        assert meta_resp.json().get("title") == "my_book"
 
     def test_upload_empty_directory_in_subdir(self, client, db_home: str):
         """Create empty directory textbook in a subdirectory."""
@@ -570,7 +669,7 @@ class TestDirectoryTextbookEndpoints:
         assert data["title"] == "Intro"
         assert data["chapter_type"] == "file"
         assert data["file_path"] == "intro.pdf"
-        assert data["start_page"] is None
+        assert data["start_page"] == 0
         assert data["end_page"] is None
         assert data["page_count"] == 1
 
@@ -819,7 +918,7 @@ class TestDirectoryTextbookEndpoints:
         assert data["chapter_type"] == "file"
         assert data["file_path"] == "multi_page.pdf"
         assert data["page_count"] == 3
-        assert data["start_page"] is None
+        assert data["start_page"] == 0
         assert data["end_page"] is None
 
     def test_get_chapter_content_for_file_type(self, client, db_home: str):
