@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 
 from docsearch.core.handlers import _generate_bibtex_from_metadata
 from docsearch.core.indexer import Indexer
+from docsearch.core.models import Document
 from docsearch.core.repository import Repository
 from docsearch.server.dependencies import get_config
 from docsearch.server.schemas import (
@@ -355,3 +356,139 @@ async def move_document(
         )
     finally:
         repo.close()
+
+
+@router.post("/{doc_id}/attach", response_model=DocumentResponse)
+async def attach_file(
+    doc_id: int,
+    directory: str = "",
+    filename: str | None = None,
+    file: UploadFile = File(...),
+    config = Depends(get_config),
+) -> DocumentResponse:
+    """Attach a physical file to a reference-only entry, converting it to source_type='file'.
+
+    The existing metadata from the reference entry is preserved by merging it into
+    the sidecar so it takes precedence over any conflicting metadata extracted from the
+    uploaded file.
+    """
+    root = config.home
+
+    # Resolve destination path
+    target_dir = root / directory if directory else root
+    target_dir = target_dir.resolve()
+    if not str(target_dir).startswith(str(root)):
+        raise HTTPException(status_code=400, detail="Directory must be within the database home.")
+    if not target_dir.is_dir():
+        raise HTTPException(status_code=400, detail=f"Directory does not exist: {target_dir}")
+
+    name = filename if filename else file.filename or "attached"
+    _validate_filename_length(name)
+    target_path = target_dir / name
+
+    if not str(target_path.resolve()).startswith(str(root)):
+        raise HTTPException(status_code=400, detail="Filename must not contain path separators.")
+
+    repo = Repository(str(config.db_path), config.home)
+    try:
+        doc = repo.get_by_id(doc_id)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+        if doc.source_type != "reference":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Document is not a reference entry (source_type={doc.source_type!r}). "
+                       "Only reference entries can have a file attached.",
+            )
+
+        # Save the uploaded file to disk
+        with open(target_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+
+        rel_target = str(target_path.relative_to(root))
+
+        # Delegate to indexer: rename DB path → write sidecar → extract
+        indexer = Indexer(repo, config.home)
+        new_doc = indexer.attach_file(
+            rel_target,
+            doc_id,
+            document_type=doc.document_type,
+            existing_metadata=doc.combined_metadata or None,
+        )
+        if new_doc is None:
+            raise HTTPException(status_code=500, detail="Failed to index attached file.")
+
+        # Update source_type to "file"
+        repo.update_document(doc_id, source_type="file")
+
+        new_doc = repo.get_by_id(doc_id)
+        return _doc_to_response(new_doc)
+    finally:
+        repo.close()
+
+
+@router.post("/{doc_id}/detach", response_model=DocumentResponse)
+async def detach_file(
+    doc_id: int,
+    config = Depends(get_config),
+) -> DocumentResponse:
+    """Detach the physical file from a document, converting it to source_type='reference'.
+
+    Deletes the main file but preserves the sidecar (.meta.json) so user-editable
+    metadata survives. Clears full_text and extracted_metadata in the database.
+    """
+    repo = Repository(str(config.db_path), config.home)
+    try:
+        doc = repo.get_by_id(doc_id)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+        if doc.source_type == "reference":
+            raise HTTPException(
+                status_code=400,
+                detail="Document is already a reference entry (no file to detach).",
+            )
+        if doc.source_type == "directory":
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot detach a directory-type document. "
+                       "This operation is only supported for file-backed documents.",
+            )
+
+        abs_path = config.home / doc.path
+
+        # Delete the main file
+        if abs_path.is_file():
+            abs_path.unlink()
+
+        # Preserve the sidecar — do NOT delete it
+        sidecar_path = Path(str(abs_path) + ".meta.json")
+
+        # Clear extractable content in the DB (no file → nothing to extract)
+        repo.update_document(
+            doc_id,
+            source_type="reference",
+            full_text="",
+            extracted_metadata={},
+        )
+
+        new_doc = repo.get_by_id(doc_id)
+        return _doc_to_response(new_doc)
+    finally:
+        repo.close()
+
+
+def _doc_to_response(doc: Document) -> DocumentResponse:
+    """Convert a Document model to a DocumentResponse."""
+    return DocumentResponse(
+        id=doc.id,
+        path=doc.path,
+        filename=doc.filename,
+        directory=doc.directory,
+        extension=doc.extension,
+        document_type=doc.document_type,
+        source_type=doc.source_type,
+        size=doc.size,
+        mtime=doc.mtime,
+        metadata=doc.combined_metadata,
+        indexed_at=doc.indexed_at,
+    )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import shutil
 from pathlib import Path
@@ -134,6 +135,51 @@ class Indexer:
 
         # Return the refreshed document
         return self.repo.get(new_rel)
+
+    def attach_file(
+        self,
+        filepath: str | Path,
+        doc_id: int,
+        document_type: str = "generic",
+        existing_metadata: dict[str, Any] | None = None,
+    ) -> Optional[Document]:
+        """Attach a physical file to an existing reference-only entry.
+
+        Steps:
+        1. Update the DB path from the old reference path to the new file location.
+        2. Write ``existing_metadata`` into the sidecar so stored data overrides
+           anything extracted from the uploaded file.
+        3. Call ``add_file`` to extract metadata and populate full_text.
+
+        Returns the updated Document or None on failure.
+        """
+        p = (self.home / filepath).resolve()
+
+        if not p.is_file():
+            raise FileNotFoundError(f"File not found: {p}")
+
+        rel = str(p.relative_to(self.home))
+
+        # Get the current reference entry by id to find its old path
+        old_doc = self.repo.get_by_id(doc_id)
+        if old_doc is None:
+            return None
+
+        old_rel = old_doc.path
+
+        # 1. Move the DB path to the new location (no filesystem move — file already there)
+        self.repo.rename(old_rel, rel)
+
+        # 2. Write preserved metadata into sidecar so it takes precedence
+        if existing_metadata:
+            sidecar_path = Path(str(p) + ".meta.json")
+            with open(sidecar_path, "w") as f:
+                json.dump(existing_metadata, f, indent=2)
+
+        # 3. Re-index: extract file metadata + load sidecar (sidecar wins).
+        # Pass skip_bib=True because bibliographic data is already preserved
+        # in the sidecar; we don't want pdf2bib to fail on non-pdf files.
+        return self.add_file(rel, document_type=document_type, skip_bib=True)
 
     def scan_directory(
         self,

@@ -1625,3 +1625,300 @@ class TestLongFilename:
         assert "detail" in body
         detail_lower = body["detail"].lower()
         assert any(kw in detail_lower for kw in ["filename", "name too long", "too long"])
+
+
+class TestAttachDetachEndpoints:
+    """Tests for attaching files to references (and vice-versa)."""
+
+    def _create_reference(self, client, db_home: str, title: str = "Test Reference") -> int:
+        """Create a metadata-only reference entry and return its id."""
+        resp = client.post(
+            "/api/documents/papers/reference",
+            json={
+                "title": title,
+                "author": "Reference Author",
+                "year": "2024",
+                "journal": "Test Journal",
+            },
+        )
+        assert resp.status_code == 200
+        return resp.json()["id"]
+
+    def _create_file_doc(self, client, db_home: str) -> int:
+        """Upload a file-backed document and return its id."""
+        resp = client.post(
+            "/api/documents/upload",
+            files={"file": ("doc.txt", b"Some file content here", "text/plain")},
+        )
+        assert resp.status_code == 200
+        return resp.json()["id"]
+
+    # ── /attach tests ──────────────────────────────────────────────
+
+    def test_attach_converts_reference_to_file(self, client, db_home: str):
+        """Attaching a file to a reference converts source_type to 'file'."""
+        doc_id = self._create_reference(client, db_home)
+
+        resp = client.post(
+            f"/api/documents/{doc_id}/attach",
+            files={"file": ("attached.pdf", b"%PDF-1.4 fake pdf", "application/pdf")},
+        )
+        assert resp.status_code == 200
+
+        doc_resp = client.get(f"/api/documents/{doc_id}")
+        assert doc_resp.status_code == 200
+        assert doc_resp.json()["source_type"] == "file"
+
+    def test_attach_preserves_existing_metadata(self, client, db_home: str):
+        """Existing reference metadata survives attachment via sidecar."""
+        doc_id = self._create_reference(client, db_home, title="My Unique Title")
+
+        # Verify original metadata
+        meta_before = client.get(f"/api/documents/{doc_id}/meta").json()
+        assert meta_before.get("title") == "My Unique Title"
+
+        resp = client.post(
+            f"/api/documents/{doc_id}/attach",
+            files={"file": ("dummy.txt", b"content", "text/plain")},
+        )
+        assert resp.status_code == 200
+
+        # Sidecar should preserve the title
+        meta_after = client.get(f"/api/documents/{doc_id}/meta").json()
+        assert meta_after.get("title") == "My Unique Title"
+
+    def test_attach_populates_full_text(self, client, db_home: str):
+        """After attach, full_text is populated from the uploaded file."""
+        doc_id = self._create_reference(client, db_home)
+
+        resp = client.post(
+            f"/api/documents/{doc_id}/attach",
+            files={"file": ("hello.txt", b"Hello world content", "text/plain")},
+        )
+        assert resp.status_code == 200
+
+        content_after = client.get(f"/api/documents/{doc_id}/content").json()
+        assert "Hello world content" in content_after["content"]
+
+    def test_attach_rejects_non_reference(self, client, db_home: str):
+        """Attaching to a file-backed document returns 400."""
+        doc_id = self._create_file_doc(client, db_home)
+
+        resp = client.post(
+            f"/api/documents/{doc_id}/attach",
+            files={"file": ("other.txt", b"data", "text/plain")},
+        )
+        assert resp.status_code == 400
+        assert "not a reference" in resp.json()["detail"].lower()
+
+    def test_attach_rejects_directory_source(self, client, db_home: str):
+        """Attaching to a directory-type textbook returns 400."""
+        resp = client.post(
+            "/api/documents/textbooks/upload",
+            params={"variant": "directory", "filename": "mybook"},
+            files={"file": ("placeholder.txt", b"", "text/plain")},
+        )
+        assert resp.status_code == 200
+        doc_id = resp.json()["id"]
+
+        attach_resp = client.post(
+            f"/api/documents/{doc_id}/attach",
+            files={"file": ("extra.txt", b"data", "text/plain")},
+        )
+        assert attach_resp.status_code == 400
+        assert "not a reference" in attach_resp.json()["detail"].lower()
+
+    def test_attach_in_subdirectory(self, client, db_home: str):
+        """Attach a file to a subdirectory within db home."""
+        from pathlib import Path
+        (Path(db_home) / "papers").mkdir(parents=True, exist_ok=True)
+
+        doc_id = self._create_reference(client, db_home)
+
+        resp = client.post(
+            f"/api/documents/{doc_id}/attach",
+            params={"directory": "papers"},
+            files={"file": ("paper.pdf", b"%PDF-1.4 fake pdf", "application/pdf")},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "papers" in data["path"]
+
+    def test_attach_with_custom_filename(self, client, db_home: str):
+        """Attach with a custom filename overrides the upload filename."""
+        doc_id = self._create_reference(client, db_home)
+
+        resp = client.post(
+            f"/api/documents/{doc_id}/attach",
+            params={"filename": "renamed.pdf"},
+            files={"file": ("original.pdf", b"%PDF-1.4 fake", "application/pdf")},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["filename"] == "renamed.pdf"
+
+    def test_attach_rejects_path_traversal_dir(self, client, db_home: str):
+        """Attach rejects directory param that escapes db home."""
+        doc_id = self._create_reference(client, db_home)
+
+        resp = client.post(
+            f"/api/documents/{doc_id}/attach",
+            params={"directory": "../escape"},
+            files={"file": ("evil.txt", b"data", "text/plain")},
+        )
+        assert resp.status_code == 400
+
+    def test_attach_rejects_path_traversal_filename(self, client, db_home: str):
+        """Attach rejects filename containing path separators."""
+        doc_id = self._create_reference(client, db_home)
+
+        resp = client.post(
+            f"/api/documents/{doc_id}/attach",
+            params={"filename": "../../../etc/passwd"},
+            files={"file": ("payload", b"data", "text/plain")},
+        )
+        assert resp.status_code == 400
+
+    def test_attach_to_nonexistent_document(self, client, db_home: str):
+        """Attaching to a non-existent doc id returns 404."""
+        resp = client.post(
+            "/api/documents/99999/attach",
+            files={"file": ("test.txt", b"data", "text/plain")},
+        )
+        assert resp.status_code == 404
+
+    # ── detach tests ───────────────────────────────────────────────
+
+    def test_detach_converts_file_to_reference(self, client, db_home: str):
+        """Detaching a file converts source_type to 'reference'."""
+        doc_id = self._create_file_doc(client, db_home)
+
+        resp = client.post(f"/api/documents/{doc_id}/detach")
+        assert resp.status_code == 200
+        assert resp.json()["source_type"] == "reference"
+
+    def test_detach_deletes_physical_file(self, client, db_home: str):
+        """Detaching removes the physical file from disk."""
+        from pathlib import Path
+
+        doc_id = self._create_file_doc(client, db_home)
+
+        # Get the document path before detach
+        doc_resp = client.get(f"/api/documents/{doc_id}")
+        doc_path = doc_resp.json()["path"]
+
+        # File exists on disk
+        assert (Path(db_home) / doc_path).is_file()
+
+        resp = client.post(f"/api/documents/{doc_id}/detach")
+        assert resp.status_code == 200
+
+        # File no longer exists
+        assert not (Path(db_home) / doc_path).is_file()
+
+    def test_detach_clears_full_text(self, client, db_home: str):
+        """Detaching clears full_text and extracted_metadata in the DB."""
+        doc_id = self._create_file_doc(client, db_home)
+
+        # Content exists before detach
+        content_before = client.get(f"/api/documents/{doc_id}/content").json()
+        assert "Some file content here" in content_before["content"]
+
+        resp = client.post(f"/api/documents/{doc_id}/detach")
+        assert resp.status_code == 200
+
+        content_after = client.get(f"/api/documents/{doc_id}/content").json()
+        assert not content_after["content"].strip()
+
+    def test_detach_preserves_sidecar_metadata(self, client, db_home: str):
+        """Detaching preserves user-editable sidecar metadata."""
+        from pathlib import Path
+        import json
+
+        doc_id = self._create_file_doc(client, db_home)
+
+        # Get the document path
+        doc_resp = client.get(f"/api/documents/{doc_id}")
+        doc_path = doc_resp.json()["path"]
+
+        # Create a sidecar file manually
+        sidecar = Path(str(Path(db_home) / doc_path) + ".meta.json")
+        with open(sidecar, "w") as f:
+            json.dump({"custom_key": "custom_value", "tag": "important"}, f)
+
+        # Re-index to pick up sidecar
+        repo = Repository(str(Path(db_home) / "docsearch.db"), db_home)
+        try:
+            from docsearch.core.indexer import Indexer
+            indexer = Indexer(repo, db_home)
+            indexer.add_file(doc_path)
+        finally:
+            repo.close()
+
+        # Detach
+        resp = client.post(f"/api/documents/{doc_id}/detach")
+        assert resp.status_code == 200
+
+        # Sidecar still exists on disk
+        assert sidecar.is_file()
+
+        # Metadata is preserved in response
+        meta = client.get(f"/api/documents/{doc_id}/meta").json()
+        assert meta.get("custom_key") == "custom_value"
+        assert meta.get("tag") == "important"
+
+    def test_detach_rejects_reference(self, client, db_home: str):
+        """Detaching an already-reference document returns 400."""
+        doc_id = self._create_reference(client, db_home)
+
+        resp = client.post(f"/api/documents/{doc_id}/detach")
+        assert resp.status_code == 400
+        assert "already a reference" in resp.json()["detail"].lower()
+
+    def test_detach_rejects_directory_source(self, client, db_home: str):
+        """Detaching a directory-type textbook returns 400."""
+        resp = client.post(
+            "/api/documents/textbooks/upload",
+            params={"variant": "directory", "filename": "mybook2"},
+            files={"file": ("placeholder.txt", b"", "text/plain")},
+        )
+        assert resp.status_code == 200
+        doc_id = resp.json()["id"]
+
+        detach_resp = client.post(f"/api/documents/{doc_id}/detach")
+        assert detach_resp.status_code == 400
+        assert "directory" in detach_resp.json()["detail"].lower()
+
+    def test_detach_nonexistent_document(self, client, db_home: str):
+        """Detaching a non-existent doc id returns 404."""
+        resp = client.post("/api/documents/99999/detach")
+        assert resp.status_code == 404
+
+    # ── round-trip tests ───────────────────────────────────────────
+
+    def test_attach_then_detach_roundtrip(self, client, db_home: str):
+        """Full cycle: reference → attach → file → detach → reference."""
+        # Step 1: create reference
+        ref_id = self._create_reference(client, db_home, title="Round Trip Paper")
+        doc = client.get(f"/api/documents/{ref_id}").json()
+        assert doc["source_type"] == "reference"
+
+        # Step 2: attach file
+        resp = client.post(
+            f"/api/documents/{ref_id}/attach",
+            files={"file": ("rt.txt", b"Round trip content", "text/plain")},
+        )
+        assert resp.status_code == 200
+        doc = client.get(f"/api/documents/{ref_id}").json()
+        assert doc["source_type"] == "file"
+        assert "Round trip content" in client.get(f"/api/documents/{ref_id}/content").json()["content"]
+
+        # Step 3: detach
+        resp = client.post(f"/api/documents/{ref_id}/detach")
+        assert resp.status_code == 200
+        doc = client.get(f"/api/documents/{ref_id}").json()
+        assert doc["source_type"] == "reference"
+        assert not client.get(f"/api/documents/{ref_id}/content").json()["content"].strip()
+
+        # Title preserved through the cycle
+        meta = client.get(f"/api/documents/{ref_id}/meta").json()
+        assert meta.get("title") == "Round Trip Paper"

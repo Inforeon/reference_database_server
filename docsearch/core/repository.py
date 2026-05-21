@@ -303,6 +303,42 @@ class Repository:
             )
             return cur.rowcount > 0
 
+    def update_document(
+        self,
+        doc_id: int,
+        *,
+        source_type: str | None = None,
+        full_text: str | None = None,
+        extracted_metadata: dict | None = None,
+    ) -> bool:
+        """Update selected fields on a document by id.
+
+        Only passes non-``None`` arguments into the UPDATE, so callers can
+        touch just the columns they care about.  Returns True when a row
+        was updated.
+        """
+        sets: list[str] = []
+        params: list[Any] = []
+
+        if source_type is not None:
+            sets.append("source_type = ?")
+            params.append(source_type)
+        if full_text is not None:
+            sets.append("full_text = ?")
+            params.append(full_text)
+        if extracted_metadata is not None:
+            sets.append("extracted_metadata = ?")
+            params.append(json.dumps(extracted_metadata))
+
+        if not sets:
+            return False
+
+        params.append(doc_id)
+        sql = f"UPDATE documents SET {', '.join(sets)} WHERE id = ?"
+        with self.transaction() as cur:
+            cur.execute(sql, params)
+            return cur.rowcount > 0
+
     def all_paths(self) -> list[str]:
         """Return all indexed paths."""
         cur = self._conn.execute("SELECT path FROM documents ORDER BY path")
