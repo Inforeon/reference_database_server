@@ -215,6 +215,8 @@ All document operations (metadata, content, file download, sidecar, BibTeX, move
 | `PATCH` | `/documents/{id}/meta` | Update sidecar key body: `{key, value}` → `{updated, key}` |
 | `GET` | `/documents/{id}/bibtex` | Export BibTeX (papers only, 400 if not paper) |
 | `POST` | `/documents/{id}/move` | Move document body: `{destination}` → `{id, old_path, new_path, filename}` |
+| `POST` | `/documents/{id}/attach` | Attach file to reference-only entry (multipart, query: `directory`, `filename`) → converts source_type to "file, preserves existing metadata via sidecar |
+| `POST` | `/documents/{id}/detach` | Detach file from document → converts source_type to "reference", deletes physical file, clears full_text and extracted_metadata, preserves sidecar |
 | `GET` | `/documents/{id}/chapters` | List textbook chapters (textbooks only, 400 if not textbook) |
 | `GET` | `/documents/{id}/chapters/{index}` | Get chapter by index (textbooks only) → `{id, textbook_id, chapter_index, title, start_page, end_page, metadata, full_text}` |
 
