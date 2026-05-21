@@ -22,6 +22,22 @@ from docsearch.server.schemas import (
 
 router = APIRouter(prefix="/api/documents/textbooks", tags=["textbooks"])
 
+# Linux/ext4 limit for a single filename component (not full path).
+_MAX_FILENAME_LENGTH = 255
+
+
+def _validate_filename_length(name: str) -> None:
+    """Raise 400 if any path component exceeds the OS filename length limit."""
+    for part in Path(name).parts:
+        if len(part) > _MAX_FILENAME_LENGTH:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Filename too long: '{part}' ({len(part)} chars). "
+                    f"Maximum allowed is {_MAX_FILENAME_LENGTH} characters."
+                ),
+            )
+
 
 @router.post("/reference", response_model=TextbookUploadResponse)
 async def add_textbook_reference(
@@ -202,6 +218,8 @@ async def upload_textbook(
                 detail="A 'filename' query parameter is required for directory-type textbooks.",
             )
 
+        _validate_filename_length(filename)
+
         # Use the directory name as the default title if not provided
         if not meta.get("title"):
             meta["title"] = filename
@@ -237,6 +255,7 @@ async def upload_textbook(
         raise HTTPException(status_code=400, detail=f"Directory does not exist: {target_dir}")
 
     name = filename if filename else file.filename or "uploaded"
+    _validate_filename_length(name)
     target_path = target_dir / name
 
     if not str(target_path.resolve()).startswith(str(root)):
@@ -379,6 +398,7 @@ async def upload_chapter(
 
         # Determine target filename
         name = filename if filename else file.filename or "chapter"
+        _validate_filename_length(name)
         target_path = textbook_dir / name
 
         if not str(target_path.resolve()).startswith(str(textbook_dir)):

@@ -1426,3 +1426,202 @@ class TestFileSystemEndpoint:
         dir_names = {d["name"] for d in data["directories"]}
         assert "sub" in dir_names
         assert "deep" not in dir_names
+
+
+class TestMoveDocument:
+    """Tests for the /documents/{id}/move endpoint."""
+
+    @pytest.fixture()
+    def indexed_file_in_home(self, db_home: str) -> Document:
+        """Create and index a file that actually lives inside db_home."""
+        from pathlib import Path
+        import os
+
+        home = Path(db_home)
+        file_path = home / "original.txt"
+        file_path.write_text("some content to move")
+
+        doc = Document(
+            path="original.txt",
+            filename="original.txt",
+            directory=".",
+            extension="txt",
+            size=file_path.stat().st_size,
+            mtime=os.path.getmtime(str(file_path)),
+            content_hash="test_hash",
+            extracted_metadata={},
+            sidecar_metadata={},
+            full_text="some content to move",
+        )
+
+        db_path = home / "docsearch.db"
+        repo = Repository(str(db_path))
+        repo.upsert(doc)
+        fetched = repo.get("original.txt")
+        repo.close()
+        return fetched
+
+    def test_move_rename_file(self, client, db_home: str, indexed_file_in_home: Document):
+        """Moving a document to a new filename renames the file on disk and updates the index."""
+        from pathlib import Path
+
+        home = Path(db_home)
+        old_path = home / "original.txt"
+        new_path = home / "renamed.txt"
+
+        assert old_path.is_file()
+        assert not new_path.is_file()
+
+        resp = client.post(
+            f"/api/documents/{indexed_file_in_home.id}/move",
+            json={"destination": "renamed.txt"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+
+        # Response reflects the rename
+        assert data["id"] == indexed_file_in_home.id
+        assert data["old_path"] == "original.txt"
+        assert data["new_path"] == "renamed.txt"
+        assert data["filename"] == "renamed.txt"
+
+        # File was actually renamed on disk
+        assert not old_path.is_file()
+        assert new_path.is_file()
+        assert new_path.read_text() == "some content to move"
+
+    def test_move_to_subdirectory(self, client, db_home: str, indexed_file_in_home: Document):
+        """Moving a document to a subdirectory creates the directory and moves the file."""
+        from pathlib import Path
+
+        home = Path(db_home)
+        old_path = home / "original.txt"
+        new_path = home / "subdir" / "original.txt"
+
+        assert old_path.is_file()
+        assert not new_path.is_file()
+
+        resp = client.post(
+            f"/api/documents/{indexed_file_in_home.id}/move",
+            json={"destination": "subdir/original.txt"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["old_path"] == "original.txt"
+        assert data["new_path"] == "subdir/original.txt"
+        assert data["filename"] == "original.txt"
+
+        assert not old_path.is_file()
+        assert new_path.is_file()
+        assert (home / "subdir").is_dir()
+
+    def test_move_rename_and_change_directory(self, client, db_home: str, indexed_file_in_home: Document):
+        """Moving a document can rename it and change its directory in one operation."""
+        from pathlib import Path
+
+        home = Path(db_home)
+        old_path = home / "original.txt"
+        new_path = home / "papers" / "thesis.txt"
+
+        assert old_path.is_file()
+        assert not new_path.is_file()
+
+        resp = client.post(
+            f"/api/documents/{indexed_file_in_home.id}/move",
+            json={"destination": "papers/thesis.txt"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["old_path"] == "original.txt"
+        assert data["new_path"] == "papers/thesis.txt"
+        assert data["filename"] == "thesis.txt"
+
+        assert not old_path.is_file()
+        assert new_path.is_file()
+        assert (home / "papers").is_dir()
+
+    def test_move_nonexistent_document_returns_404(self, client):
+        resp = client.post(
+            "/api/documents/9999/move",
+            json={"destination": "somewhere.txt"},
+        )
+        assert resp.status_code == 404
+
+    def test_move_rejects_path_traversal(self, client, db_home: str, indexed_file_in_home: Document):
+        """Moving outside the database home is rejected."""
+        resp = client.post(
+            f"/api/documents/{indexed_file_in_home.id}/move",
+            json={"destination": "../etc/evil.txt"},
+        )
+        assert resp.status_code == 400
+
+
+class TestLongFilename:
+    """Tests for handling excessively long filenames (OS limit ~255 bytes)."""
+
+    LONG_FILENAME = (
+        "Langerak_AW__Groenen_PJ__Br_ggemann_M__Beldjord_K__Bellan_C__Bonello_L__"
+        "Boone_E__Carter_GI__Catherwood_M__Davi_F__Delfau-Larue_MH__Diss_T__"
+        "Evans_PA__Gameiro_P__Garcia_Sanz_R__Gonzalez_D__Grand_D__H_kansson_A__"
+        "Hummel_M__Liu_H__Lombardia_L__Macintyre_EA__Milner_BJ__Montes-Moreno_S__"
+        "Schuuring_E__Spaargaren_M__Hodges_E__van_Dongen_JJ2012.bib"
+    )
+
+    @pytest.fixture()
+    def indexed_file_in_home(self, db_home: str) -> Document:
+        """Create and index a file that actually lives inside db_home."""
+        from pathlib import Path
+        import os
+
+        home = Path(db_home)
+        file_path = home / "original.txt"
+        file_path.write_text("some content to move")
+
+        doc = Document(
+            path="original.txt",
+            filename="original.txt",
+            directory=".",
+            extension="txt",
+            size=file_path.stat().st_size,
+            mtime=os.path.getmtime(str(file_path)),
+            content_hash="test_hash",
+            extracted_metadata={},
+            sidecar_metadata={},
+            full_text="some content to move",
+        )
+
+        db_path = home / "docsearch.db"
+        repo = Repository(str(db_path))
+        repo.upsert(doc)
+        fetched = repo.get("original.txt")
+        repo.close()
+        return fetched
+
+    def test_upload_rejects_long_filename(self, client, db_home: str):
+        """Uploading a file with a filename exceeding the OS limit should return a meaningful error."""
+        resp = client.post(
+            "/api/documents/upload",
+            files={"file": (self.LONG_FILENAME, b"content", "text/plain")},
+        )
+        # Should not be a bare 500 — the user needs to know *why*
+        assert resp.status_code in (400, 413)
+        body = resp.json()
+        assert "detail" in body
+        # The error message should mention the filename length issue
+        detail_lower = body["detail"].lower()
+        assert any(kw in detail_lower for kw in ["filename", "name too long", "too long"])
+
+    def test_move_rejects_long_filename(self, client, db_home: str, indexed_file_in_home: Document):
+        """Moving a document to a destination with an excessively long filename should return a meaningful error."""
+        resp = client.post(
+            f"/api/documents/{indexed_file_in_home.id}/move",
+            json={"destination": self.LONG_FILENAME},
+        )
+        # Should not be a bare 500 — the user needs to know *why*
+        assert resp.status_code in (400, 413)
+        body = resp.json()
+        assert "detail" in body
+        detail_lower = body["detail"].lower()
+        assert any(kw in detail_lower for kw in ["filename", "name too long", "too long"])

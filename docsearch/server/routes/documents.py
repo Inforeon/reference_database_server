@@ -23,6 +23,22 @@ from docsearch.server.schemas import (
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 
+# Linux/ext4 limit for a single filename component (not full path).
+_MAX_FILENAME_LENGTH = 255
+
+
+def _validate_filename_length(name: str) -> None:
+    """Raise 400 if any path component exceeds the OS filename length limit."""
+    for part in Path(name).parts:
+        if len(part) > _MAX_FILENAME_LENGTH:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Filename too long: '{part}' ({len(part)} chars). "
+                    f"Maximum allowed is {_MAX_FILENAME_LENGTH} characters."
+                ),
+            )
+
 
 @router.post("/reference", response_model=UploadResponse)
 async def add_generic_reference(
@@ -104,6 +120,7 @@ async def upload_file(
         raise HTTPException(status_code=400, detail=f"Directory does not exist: {target_dir}")
 
     name = filename if filename else file.filename or "uploaded"
+    _validate_filename_length(name)
     target_path = target_dir / name
 
     if not str(target_path.resolve()).startswith(str(root)):
@@ -290,6 +307,9 @@ async def move_document(
     Parent directories are created automatically.
     """
     root = config.home
+
+    # Validate filename length before resolving paths
+    _validate_filename_length(body.destination)
 
     # Resolve destination relative to database home
     dest_p = Path(body.destination)

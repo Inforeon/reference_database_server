@@ -115,17 +115,19 @@ class Indexer:
         if doc is None:
             return None
 
-        # Create parent directories on the destination side
-        new_p.parent.mkdir(parents=True, exist_ok=True)
+        # For reference-only entries there is no physical file to move.
+        if doc.source_type != "reference":
+            # Create parent directories on the destination side
+            new_p.parent.mkdir(parents=True, exist_ok=True)
 
-        # Move the actual file
-        shutil.move(str(old_p), str(new_p))
+            # Move the actual file
+            shutil.move(str(old_p), str(new_p))
 
-        # Move the sidecar metadata file if it exists
-        old_sidecar = Path(str(old_p) + ".meta.json")
-        new_sidecar = Path(str(new_p) + ".meta.json")
-        if old_sidecar.is_file():
-            shutil.move(str(old_sidecar), str(new_sidecar))
+            # Move the sidecar metadata file if it exists
+            old_sidecar = Path(str(old_p) + ".meta.json")
+            new_sidecar = Path(str(new_p) + ".meta.json")
+            if old_sidecar.is_file():
+                shutil.move(str(old_sidecar), str(new_sidecar))
 
         # Update DB row in-place (preserves id)
         self.repo.rename(old_rel, new_rel)

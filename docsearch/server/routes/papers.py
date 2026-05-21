@@ -14,6 +14,22 @@ from docsearch.server.schemas import AddPaperRequest, AddPaperReferenceRequest, 
 
 router = APIRouter(prefix="/api/documents/papers", tags=["papers"])
 
+# Linux/ext4 limit for a single filename component (not full path).
+_MAX_FILENAME_LENGTH = 255
+
+
+def _validate_filename_length(name: str) -> None:
+    """Raise 400 if any path component exceeds the OS filename length limit."""
+    for part in Path(name).parts:
+        if len(part) > _MAX_FILENAME_LENGTH:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Filename too long: '{part}' ({len(part)} chars). "
+                    f"Maximum allowed is {_MAX_FILENAME_LENGTH} characters."
+                ),
+            )
+
 
 @router.post("/add", response_model=PaperUploadResponse)
 async def add_paper(
@@ -88,6 +104,7 @@ async def upload_paper(
         raise HTTPException(status_code=400, detail=f"Directory does not exist: {target_dir}")
 
     name = filename if filename else file.filename or "uploaded"
+    _validate_filename_length(name)
     target_path = target_dir / name
 
     if not str(target_path.resolve()).startswith(str(root)):
