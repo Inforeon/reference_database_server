@@ -106,15 +106,16 @@ docsearch [--home PATH] COMMAND
 
 | Command | Description |
 |---|---|
-| `info` | Show database location and index statistics |
+| `info [DOC_ID]` | Show database location and index statistics; with DOC_ID, show full document metadata |
 
 ### Index Management
 
 | Command | Description |
 |---|---|
-| `index scan <DIR>` | Scan directory tree and sync index (`-t TYPE`, `-r/--recursive`) |
-| `index add <FILE>` | Add a single file (`-t TYPE`) |
+| `index scan <DIR>` | Scan directory tree and sync index (`-T/--document-type TYPE`, `--no-recursive`) |
+| `index add <FILE>` | Add a single generic file to the index |
 | `index remove <FILE>` | Remove a file from the index |
+| `index move <SRC> <DST>` | Move an indexed file to a new location |
 | `index status <FILE>` | Check if a file needs re-indexing |
 
 ### Search
@@ -125,15 +126,15 @@ docsearch search -q QUERY [OPTIONS]
 
 | Option | Description |
 |---|---|
-| `-q, --query TEXT` | Search query (required) |
+| `-q, --query TEXT` | Full-text search query |
 | `--scope DIRECTORY` | Limit to subdirectory |
 | `--type EXTENSION` | Filter by file extension |
 | `--author NAME` | Filter by author |
 | `--tag TAG` | Filter by tag (repeatable) |
-| `--after DATE` | Indexed after date |
-| `--before DATE` | Indexed before date |
-| `--types TYPES` | Comma-separated document types |
-| `--limit N` | Max results |
+| `--after DATE` | Modified after ISO date (YYYY-MM-DD) |
+| `--before DATE` | Modified before ISO date (YYYY-MM-DD) |
+| `--document-types TYPES` | Comma-separated document types (generic, paper, textbook, reference) |
+| `--limit N` | Max results (default: 50) |
 | `--offset N` | Pagination offset |
 | `-f FORMAT` | Output: `text`, `json`, or `csv` (default: `text`) |
 
@@ -143,6 +144,20 @@ docsearch search -q QUERY [OPTIONS]
 |---|---|
 | `get <DOC_ID>` | Retrieve extracted text (`-f text\|json`) |
 | `bibtex <DOC_ID>` | Export BibTeX entry (papers only) |
+
+### References and Document Operations
+
+| Command | Description |
+|---|---|
+| `reference` | Register a metadata-only reference (`-t TITLE`, `-a AUTHOR`, `-s SUBJECT`, `-k KEYWORDS`, `-u URL`, `-p PATH`, `-T TYPE`, `-m KEY=VALUE`) |
+| `document attach <DOC_ID> <FILE>` | Attach a local file to an existing reference entry |
+| `document detach <DOC_ID>` | Detach the physical file from a document, converting to reference |
+
+### Filesystem Browsing
+
+| Command | Description |
+|---|---|
+| `ls [PATH]` | List indexed contents of a directory (`-f text\|json`) |
 
 ### Sidecar Metadata
 
@@ -159,6 +174,7 @@ docsearch search -q QUERY [OPTIONS]
 |---|---|
 | `papers add <FILE>` | Add research paper (`--doi`, `--skip-bib`, `-m KEY=VALUE`) |
 | `papers upload <FILE>` | Upload and auto-index (`-n NAME`, `-D DIR`, `--doi`, `--skip-bib`, `-m KEY=VALUE`) |
+| `papers reference` | Register metadata-only paper reference (`-t TITLE`, `-a AUTHOR`, `-y YEAR`, `-j JOURNAL`, `-b BOOKTITLE`, `-d DOI`, `-u URL`, `-k CITATION_KEY`, `-p PATH`, `-m KEY=VALUE`) |
 
 ### Textbooks
 
@@ -166,6 +182,9 @@ docsearch search -q QUERY [OPTIONS]
 |---|---|
 | `textbooks add <FILE>` | Add textbook (`-m KEY=VALUE`) |
 | `textbooks upload <FILE>` | Upload and auto-index (`-n NAME`, `-D DIR`, `-m KEY=VALUE`) |
+| `textbooks reference` | Register metadata-only textbook reference (`-t TITLE`, `-a AUTHOR`, `-y YEAR`, `--publisher`, `-e EDITION`, `-u URL`, `-D PATH`, `-m KEY=VALUE`) |
+| `textbooks init <DIR>` | Initialize empty directory-type textbook (`-t TITLE`, `-m KEY=VALUE`) |
+| `textbooks attach-chapter <DOC_ID> <FILE>` | Associate local chapter file with directory textbook (`-i INDEX`) |
 | `textbooks chapters <FILE>` | List indexed chapters |
 | `textbooks chapter <FILE>` | Print chapter text (`-i CHAPTER_INDEX`) |
 

@@ -22,17 +22,24 @@ def index() -> None:
 @index.command()
 @click.argument("dirpath", type=click.Path(exists=True, file_okay=False))
 @click.option("--no-recursive", is_flag=True, help="Only scan the top-level directory.")
+@click.option(
+    "-T", "--document-type", "document_type", default="generic",
+    type=click.Choice(["generic", "paper", "textbook"]),
+    help="Document type for indexing (default: generic).",
+)
 @click.pass_obj
-def scan(ctx: dict, dirpath: str, no_recursive: bool) -> None:
-    """Scan a directory tree and sync the index (generic documents only).
+def scan(ctx: dict, dirpath: str, no_recursive: bool, document_type: str) -> None:
+    """Scan a directory tree and sync the index.
 
-    For document-type-specific scanning use ``papers`` or ``textbooks`` commands.
+    All discovered files are indexed with the given ``--document-type``
+    (defaults to ``generic``). For type-specific behaviour use ``papers``
+    or ``textbooks`` commands.
     """
     config = ctx["config"]
     repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
-        stats = indexer.scan_directory(dirpath, recursive=not no_recursive, document_type="generic")
+        stats = indexer.scan_directory(dirpath, recursive=not no_recursive, document_type=document_type)
         click.echo(f"Scanned: {dirpath}")
         click.echo(f"  Added:     {stats['added']}")
         click.echo(f"  Updated:   {stats['updated']}")

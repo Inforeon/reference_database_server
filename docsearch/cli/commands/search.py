@@ -16,6 +16,7 @@ from docsearch.core.repository import Repository
 @click.option("--tag", "tags", multiple=True, help="Filter by tag(s). Can be repeated.")
 @click.option("--after", default="", help="Filter documents modified after ISO date (YYYY-MM-DD).")
 @click.option("--before", default="", help="Filter documents modified before ISO date (YYYY-MM-DD).")
+@click.option("--document-types", default="", help="Filter by document type(s): generic, paper, textbook, reference (comma-separated).")
 @click.option("--limit", default=50, type=int, help="Max results to return.")
 @click.option("--offset", default=0, type=int, help="Skip N results.")
 @click.option(
@@ -35,6 +36,7 @@ def search(
     tags: tuple[str, ...],
     after: str,
     before: str,
+    document_types: str,
     limit: int,
     offset: int,
     output_format: str,
@@ -43,6 +45,7 @@ def search(
     config = ctx["config"]
     repo = Repository(str(config.db_path), config.home)
     try:
+        doc_types_list = [t.strip() for t in document_types.split(",") if t.strip()] if document_types else []
         sq = SearchQuery(
             q=query,
             scope=scope,
@@ -51,6 +54,7 @@ def search(
             tags=list(tags),
             after=after,
             before=before,
+            document_types=doc_types_list,
             limit=limit,
             offset=offset,
         )

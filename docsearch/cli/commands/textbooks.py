@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
+from typing import Any
 
 import click
 
 from docsearch.core.indexer import Indexer
+from docsearch.core.models import Chapter
 from docsearch.core.repository import Repository
+from docsearch.extractors import load_extractors
 
 
 @click.group(name="textbooks")
@@ -140,6 +144,154 @@ def reference(ctx: dict, title: str, author: str | None, year: str | None, publi
 
 
 # ── helpers ────────────────────────────────────────────────────────
+
+@textbooks.command(name="init")
+@click.argument("directory", type=click.Path())
+@click.option("-t", "--title", default=None, help="Title of the textbook (default: directory name).")
+@click.option(
+    "-m", "--meta", "meta_pairs",
+    multiple=True,
+    help="Extra metadata as KEY=VALUE (repeatable, JSON values supported).",
+)
+@click.pass_obj
+def init(ctx: dict, directory: str, title: str | None, meta_pairs: tuple[str, ...]) -> None:
+    """Initialize an empty directory-type textbook.
+
+    Creates an empty directory at the specified path with a Document entry so
+    chapters can be associated later via ``textbooks attach-chapter``.
+    The directory path may be relative (resolved against the database home)
+    or absolute.
+    """
+    config = ctx["config"]
+    root = config.home
+
+    # Resolve directory relative to database home
+    dir_p = Path(directory)
+    if dir_p.is_absolute():
+        dir_p = dir_p.resolve()
+    else:
+        dir_p = (root / dir_p).resolve()
+
+    # Enforce containment within database home
+    if not str(dir_p).startswith(str(root)):
+        click.echo("Directory must be within the database home.", err=True)
+        return
+
+    extra_meta = _parse_meta_pairs(meta_pairs) or {}
+    if title:
+        extra_meta["title"] = title
+
+    dir_p.mkdir(parents=True, exist_ok=True)
+
+    repo = Repository(str(config.db_path), config.home)
+    try:
+        indexer = Indexer(repo, config.home)
+        rel_dir = str(dir_p.relative_to(root))
+        doc = indexer.add_file(rel_dir, document_type="textbook", extra_metadata=extra_meta or None)
+        if doc:
+            click.echo(f"Textbook directory initialized: {doc.path} (type={doc.document_type}, source={doc.source_type})")
+        else:
+            click.echo("Failed to initialize textbook directory.", err=True)
+    finally:
+        repo.close()
+
+
+@textbooks.command(name="attach-chapter")
+@click.argument("doc_id", type=int)
+@click.argument("chapter_filepath", type=click.Path(exists=True, dir_okay=False))
+@click.option("--index", "-i", "chapter_index", default=None, type=int, help="Explicit chapter index (auto-assigned if omitted).")
+@click.pass_obj
+def attach_chapter(ctx: dict, doc_id: int, chapter_filepath: str, chapter_index: int | None) -> None:
+    """Associate a local chapter file with a directory-type textbook.
+
+    Copies the chapter file into the textbook's directory and creates a
+    corresponding chapter entry. If a file with the same name already exists,
+    it is overwritten and the old chapter row is replaced.
+    """
+    config = ctx["config"]
+    repo = Repository(str(config.db_path), config.home)
+    try:
+        doc = repo.get_by_id(doc_id)
+        if not doc:
+            click.echo(f"Document {doc_id} not found.", err=True)
+            return
+        if doc.document_type != "textbook":
+            click.echo(f"Not a textbook: type={doc.document_type}", err=True)
+            return
+        if doc.source_type != "directory":
+            click.echo(
+                f"Cannot attach chapter: textbook {doc.filename!r} is source_type '{doc.source_type}', not 'directory'. "
+                "Chapter attachment is only supported for directory-type textbooks.",
+                err=True,
+            )
+            return
+
+        textbook_dir = config.home / doc.path
+        if not textbook_dir.is_dir():
+            click.echo(f"Textbook directory does not exist: {textbook_dir}", err=True)
+            return
+
+        src_p = Path(chapter_filepath).resolve()
+        name = src_p.name
+        target_path = textbook_dir / name
+
+        # If a file already exists at destination, remove its old chapter entry
+        old_chapter = repo.get_chapter_by_file_path(doc_id, name)
+        if old_chapter and target_path.exists():
+            repo.delete_chapter_by_id(old_chapter.id)
+
+        # Copy the chapter file (overwrites if exists)
+        shutil.copy2(str(src_p), str(target_path))
+
+        # Auto-assign chapter_index if not provided
+        if chapter_index is None:
+            existing = repo.get_chapters(doc_id)
+            used_indices = {ch.chapter_index for ch in existing}
+            idx = 0
+            while idx in used_indices:
+                idx += 1
+            chapter_index = idx
+
+        # Extract text and metadata from the chapter file
+        extractors = load_extractors()
+        ext = src_p.suffix.lower().lstrip(".")
+        extractor = extractors.get(ext)
+
+        extracted_meta: dict[str, Any] = {}
+        full_text = ""
+        page_count: int | None = None
+
+        if extractor:
+            extracted_meta, full_text = extractor.extract(str(target_path))
+
+            # Get page count for PDFs
+            try:
+                import fitz
+                with fitz.open(str(target_path)) as pdf_doc:
+                    page_count = len(pdf_doc)
+            except Exception:
+                pass
+
+        title = name.replace(".pdf", "").replace("_", " ").replace("-", " ").title()
+
+        chapter = Chapter(
+            textbook_id=doc_id,
+            chapter_index=chapter_index,
+            title=title,
+            chapter_type="file",
+            start_page=None,
+            end_page=None,
+            page_count=page_count,
+            file_path=name,
+            metadata=extracted_meta,
+            full_text=full_text,
+        )
+        repo.upsert_chapter(chapter)
+
+        click.echo(f"Attached chapter: {chapter_filepath} → index={chapter_index}, title={title}")
+    finally:
+        repo.close()
+
 
 @textbooks.command(name="chapters")
 @click.argument("filepath", type=click.Path(exists=True, dir_okay=False))

@@ -14,7 +14,7 @@ docsearch/
 │   └── handlers.py  — DocumentHandler pipeline (generic, paper, textbook, reference)
 ├── extractors/      — Pluggable file-type extractors (PDF, DOCX, Markdown)
 ├── cli/             — Click-based CLI commands
-│   └── commands/    — index, search, get, meta, bibtex, papers, textbooks
+│   └── commands/    — index, search, get, meta, bibtex, papers, textbooks, reference, document, ls
 └── server/          — FastAPI REST API
     ├── app.py       — App factory, lifespan, health endpoint
     ├── dependencies.py — Shared FastAPI dependencies (get_config)
@@ -131,25 +131,36 @@ Entry point: `docsearch` (maps to `docsearch.cli.main:cli`)
 docsearch [--home PATH] COMMAND
 
 Commands:
-  info                Show database location and index statistics
-  index scan <DIR>    Scan directory tree and sync index
-  index add <FILE>    Add a single file to the index
-  index remove <FILE> Remove a file from the index
-  index status <FILE> Check if a file needs re-indexing
-  search              Search indexed documents
-  get <DOC_ID>        Retrieve extracted text content (-f text/json)
-  meta show <FILE>    Display sidecar metadata
-  meta set <FILE>     Set a key/value in sidecar (-k KEY -v VALUE)
-  meta delete <FILE>  Delete a key from sidecar (-k KEY)
-  meta init <FILE>    Create empty sidecar file
-  bibtex <DOC_ID>     Export BibTeX for a paper
-  papers add <FILE>   Add a research paper (--doi, --skip-bib, -m KEY=VALUE)
-  papers upload <FILE> Upload a paper (--doi, --skip-bib, -n NAME, -D DIRECTORY)
+  info [DOC_ID]           Show database location and index statistics; with DOC_ID, show full document metadata
+  index scan <DIR>        Scan directory tree and sync index (-T/--document-type TYPE, --no-recursive)
+  index add <FILE>        Add a single generic file to the index
+  index remove <FILE>     Remove a file from the index
+  index move <SRC> <DST>  Move an indexed file to a new location
+  index status <FILE>     Check if a file needs re-indexing
+  search                  Search indexed documents (-q, --scope, --type, --author, --tag, --after/--before, --document-types, --limit, --offset, -f)
+  get <DOC_ID>            Retrieve extracted text content (-f text/json)
+  bibtex <DOC_ID>         Export BibTeX for a paper
+  reference               Register a metadata-only generic reference (-t TITLE, -a AUTHOR, -s SUBJECT, -k KEYWORDS, -u URL, -p PATH, -T TYPE, -m KEY=VALUE)
+  document attach <ID> <FILE>  Attach a local file to an existing reference entry
+  document detach <ID>    Detach the physical file from a document, converting to reference
+  ls [PATH]               List indexed contents of a directory (-f text/json)
+  meta show <FILE>        Display sidecar metadata
+  meta set <FILE>         Set a key/value in sidecar (-k KEY -v VALUE)
+  meta delete <FILE>      Delete a key from sidecar (-k KEY)
+  meta init <FILE>        Create empty sidecar file
+  papers add <FILE>       Add a research paper (--doi, --skip-bib, -m KEY=VALUE)
+  papers upload <FILE>    Upload a paper (--doi, --skip-bib, -n NAME, -D DIRECTORY)
+  papers reference        Register metadata-only paper reference (-t TITLE, -a AUTHOR, -y YEAR, -j JOURNAL, -b BOOKTITLE, -d DOI, -u URL, -k CITATION_KEY, -p PATH, -m KEY=VALUE)
   textbooks add <FILE>    Add a textbook (-m KEY=VALUE)
   textbooks upload <FILE> Upload a textbook (-n NAME, -D DIRECTORY)
+  textbooks reference     Register metadata-only textbook reference (-t TITLE, -a AUTHOR, -y YEAR, --publisher, -e EDITION, -u URL, -D PATH, -m KEY=VALUE)
+  textbooks init <DIR>    Initialize empty directory-type textbook (-t TITLE, -m KEY=VALUE)
+  textbooks attach-chapter <ID> <FILE>  Associate local chapter file with directory textbook (-i INDEX)
+  textbooks chapters <FILE>   List indexed chapters
+  textbooks chapter <FILE>    Print chapter text (-i CHAPTER_INDEX)
 ```
 
-Search supports: `-q QUERY`, `--scope DIR`, `--type EXT`, `--author NAME`, `--tag TAG` (repeatable), `--after/--before DATE`, `--limit N`, `--offset N`, `-f FORMAT` (text/json/csv). All output formats include the document `id`.
+Search supports: `-q QUERY`, `--scope DIR`, `--type EXT`, `--author NAME`, `--tag TAG` (repeatable), `--after/--before DATE`, `--document-types TYPES` (comma-separated), `--limit N`, `--offset N`, `-f FORMAT` (text/json/csv). All output formats include the document `id`.
 
 ## REST API
 
