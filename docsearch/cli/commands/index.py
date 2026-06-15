@@ -5,6 +5,7 @@ from pathlib import Path
 
 import click
 
+from docsearch.cli.utils import resolve_user_path_to_home_relative
 from docsearch.core.indexer import Indexer
 from docsearch.core.repository import Repository
 
@@ -20,7 +21,7 @@ def index() -> None:
 
 
 @index.command()
-@click.argument("dirpath", type=click.Path(exists=True, file_okay=False))
+@click.argument("dirpath")
 @click.option("--no-recursive", is_flag=True, help="Only scan the top-level directory.")
 @click.option(
     "-T", "--document-type", "document_type", default="generic",
@@ -36,10 +37,11 @@ def scan(ctx: dict, dirpath: str, no_recursive: bool, document_type: str) -> Non
     or ``textbooks`` commands.
     """
     config = ctx["config"]
+    rel_dirpath = resolve_user_path_to_home_relative(config, dirpath, require_dir=True)
     repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
-        stats = indexer.scan_directory(dirpath, recursive=not no_recursive, document_type=document_type)
+        stats = indexer.scan_directory(rel_dirpath, recursive=not no_recursive, document_type=document_type)
         click.echo(f"Scanned: {dirpath}")
         click.echo(f"  Added:     {stats['added']}")
         click.echo(f"  Updated:   {stats['updated']}")
@@ -51,7 +53,7 @@ def scan(ctx: dict, dirpath: str, no_recursive: bool, document_type: str) -> Non
 
 
 @index.command()
-@click.argument("filepath", type=click.Path(exists=True, dir_okay=False))
+@click.argument("filepath")
 @click.pass_obj
 def add(ctx: dict, filepath: str) -> None:
     """Add a single generic document to the index.
@@ -59,10 +61,11 @@ def add(ctx: dict, filepath: str) -> None:
     For document-type-specific behaviour use ``papers add`` or ``textbooks add``.
     """
     config = ctx["config"]
+    rel_filepath = resolve_user_path_to_home_relative(config, filepath, require_file=True)
     repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
-        doc = indexer.add_file(filepath, document_type="generic")
+        doc = indexer.add_file(rel_filepath, document_type="generic")
         if doc:
             click.echo(f"Indexed: {doc.path} (type={doc.document_type})")
         else:
@@ -72,15 +75,16 @@ def add(ctx: dict, filepath: str) -> None:
 
 
 @index.command()
-@click.argument("filepath", type=click.Path())
+@click.argument("filepath")
 @click.pass_obj
 def remove(ctx: dict, filepath: str) -> None:
     """Remove a file from the index."""
     config = ctx["config"]
+    rel_filepath = resolve_user_path_to_home_relative(config, filepath)
     repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
-        if indexer.remove_file(filepath):
+        if indexer.remove_file(rel_filepath):
             click.echo(f"Removed: {filepath}")
         else:
             click.echo(f"Not found in index: {filepath}", err=True)
@@ -89,43 +93,45 @@ def remove(ctx: dict, filepath: str) -> None:
 
 
 @index.command()
-@click.argument("source", type=click.Path(exists=True, dir_okay=False))
-@click.argument("destination", type=click.Path())
+@click.argument("source")
+@click.argument("destination")
 @click.pass_obj
 def move(ctx: dict, source: str, destination: str) -> None:
     """Move an indexed file to a new location within the database home.
 
-    The destination may be relative (resolved against the database home)
-    or absolute. Parent directories are created automatically.
+    Paths may be relative (resolved against current working directory) or
+    absolute.  If the destination is an existing directory, the file is moved
+    into that directory keeping its original name.  Parent directories are
+    created automatically when the destination is a new file path.
     The file must already be indexed; the internal ID is preserved.
     """
     config = ctx["config"]
-    root = config.home
+    source_rel = resolve_user_path_to_home_relative(config, source, require_file=True)
 
-    # Resolve destination relative to database home
-    dest_p = Path(destination)
-    if dest_p.is_absolute():
-        dest_p = dest_p.resolve()
+    # Resolve destination and handle directory vs file distinction
+    dest_abs = Path(destination)
+    if dest_abs.is_absolute():
+        dest_resolved = dest_abs.resolve()
     else:
-        dest_p = (root / dest_p).resolve()
+        dest_resolved = (Path.cwd() / dest_abs).resolve()
 
-    # Enforce containment within database home
-    if not str(dest_p).startswith(str(root)):
-        click.echo("Destination must be within the database home.", err=True)
-        return
+    # If destination is an existing directory, append the source filename
+    if dest_resolved.is_dir():
+        dest_file = dest_resolved / Path(source_rel).name
+    else:
+        dest_file = dest_resolved
+
+    # Validate the final destination file path is within home
+    try:
+        dest_rel = str(dest_file.relative_to(config.home.resolve()))
+    except ValueError:
+        raise click.ClickException(
+            f"Destination '{destination}' resolves to '{dest_file}', which is "
+            f"outside the database home ('{config.home}')."
+        )
 
     repo = Repository(str(config.db_path), config.home)
     try:
-        source_p = Path(source).resolve()
-
-        # Validate source is inside the database home
-        if not str(source_p).startswith(str(root)):
-            click.echo("Source file is outside the database home.", err=True)
-            return
-
-        source_rel = str(source_p.relative_to(root))
-        dest_rel = str(dest_p.relative_to(root))
-
         indexer = Indexer(repo, config.home)
         new_doc = indexer.move_file(source_rel, dest_rel)
         if new_doc:
@@ -137,15 +143,16 @@ def move(ctx: dict, source: str, destination: str) -> None:
 
 
 @index.command()
-@click.argument("filepath", type=click.Path(exists=True))
+@click.argument("filepath")
 @click.pass_obj
 def status(ctx: dict, filepath: str) -> None:
     """Check whether a file needs re-indexing."""
     config = ctx["config"]
+    rel_filepath = resolve_user_path_to_home_relative(config, filepath, require_exists=True)
     repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
-        needs = indexer.needs_reindex(filepath)
+        needs = indexer.needs_reindex(rel_filepath)
         if needs:
             click.echo(f"{filepath} → needs indexing")
         else:

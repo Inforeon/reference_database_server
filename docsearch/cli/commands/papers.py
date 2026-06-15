@@ -5,6 +5,7 @@ from pathlib import Path
 
 import click
 
+from docsearch.cli.utils import resolve_user_path_to_home_relative
 from docsearch.core.indexer import Indexer
 from docsearch.core.repository import Repository
 
@@ -16,7 +17,7 @@ def papers() -> None:
 
 
 @papers.command()
-@click.argument("filepath", type=click.Path(exists=True, dir_okay=False))
+@click.argument("filepath")
 @click.option("-d", "--doi", help="DOI to embed into the PDF before bibliographic extraction.")
 @click.option("--skip-bib", is_flag=True, help="Skip pdf2bib processing (generate bibtex from available metadata only).")
 @click.option(
@@ -33,6 +34,7 @@ def add(ctx: dict, filepath: str, doi: str | None, skip_bib: bool, meta_pairs: t
     bypass pdf2bib entirely.
     """
     config = ctx["config"]
+    rel_filepath = resolve_user_path_to_home_relative(config, filepath, require_file=True)
     repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
@@ -40,7 +42,7 @@ def add(ctx: dict, filepath: str, doi: str | None, skip_bib: bool, meta_pairs: t
         if doi:
             extra_meta["doi"] = doi
 
-        doc = indexer.add_file(filepath, document_type="paper", extra_metadata=extra_meta or None, skip_bib=skip_bib)
+        doc = indexer.add_file(rel_filepath, document_type="paper", extra_metadata=extra_meta or None, skip_bib=skip_bib)
         if doc:
             click.echo(f"Indexed: {doc.path} (type={doc.document_type})")
         else:

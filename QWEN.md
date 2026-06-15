@@ -14,6 +14,7 @@ docsearch/
 │   └── handlers.py  — DocumentHandler pipeline (generic, paper, textbook, reference)
 ├── extractors/      — Pluggable file-type extractors (PDF, DOCX, Markdown)
 ├── cli/             — Click-based CLI commands
+│   ├── utils.py     — CLI path resolution helper (CWD-aware, home-contained)
 │   └── commands/    — index, search, get, meta, bibtex, papers, textbooks, reference, document, ls
 └── server/          — FastAPI REST API
     ├── app.py       — App factory, lifespan, health endpoint
@@ -32,6 +33,7 @@ The **database home** is an explicit root directory under which all data lives:
 - All document paths are stored **relative** to the database home (portable across machines)
 - Absolute paths are resolved dynamically as `config.home / doc.path` for filesystem operations
 - File uploads are scoped within the database home
+- **CLI path resolution:** User-supplied relative paths are resolved against the current working directory first, then validated as being within the database home. This allows natural usage from subdirectories (e.g., `cd home/proj_1 && docsearch papers add paper.pdf`). Absolute paths must also reside within the database home. The shared helper `resolve_user_path_to_home_relative()` in `cli/utils.py` implements this logic.
 
 | | Default | Override |
 |---|---|---|
@@ -135,7 +137,7 @@ Commands:
   index scan <DIR>        Scan directory tree and sync index (-T/--document-type TYPE, --no-recursive)
   index add <FILE>        Add a single generic file to the index
   index remove <FILE>     Remove a file from the index
-  index move <SRC> <DST>  Move an indexed file to a new location
+  index move <SRC> <DST>  Move an indexed file to a new location (DST may be a directory)
   index status <FILE>     Check if a file needs re-indexing
   search                  Search indexed documents (-q, --scope, --type, --author, --tag, --after/--before, --document-types, --limit, --offset, -f)
   get <DOC_ID>            Retrieve extracted text content (-f text/json)
@@ -211,15 +213,17 @@ Located in `tests/`, run with `pytest`.
 | `test_extractors.py` | `PdfExtractor` (metadata extraction, text extraction, multi-page, fault tolerance) |
 | `test_handlers.py` | BibTeX helpers (`_normalize_title`, `_titles_match`, `_format_author_dict`, `_format_authors_bib`, `_generate_bibtex_from_metadata`), `PaperDocumentHandler` integration (skip_bib, DOI embedding, title mismatch logic, authors_bib handling) |
 | `test_server.py` | REST API content/file endpoints (`/content`, `/file`), upload (basic, subdirectory, custom name, path traversal rejection, nonexistent dir, unsupported type), BibTeX endpoint, paper endpoints (add/upload with DOI), textbook endpoints (add/upload), chapter endpoints (list, get, search), directory textbook endpoints (empty dir creation, chapter upload, auto-indexing, overwrite, path traversal), reference endpoints (basic, DOI, bibtex generation, custom bibtex, title validation, citation key, extra metadata, searchable content, file download 404, search integration, duplicate upsert), filesystem browsing (`/api/fs`: root listing, subdirectory files, mixed files/dirs, directory-type textbook as directory entry, empty dir, path traversal rejection, path field, deeply nested immediate children), attach/detach endpoints (attach converts reference to file, preserves metadata via sidecar, populates full_text, rejects non-reference/directory sources, subdirectory/custom filename, path traversal rejection; detach converts file to reference, deletes physical file, clears full_text, preserves sidecar metadata, rejects reference/directory sources; round-trip attach→detach cycle) |
+| `test_cli_path_resolution.py` | CLI path resolution helper unit tests (CWD-relative paths, absolute paths, outside-home rejection, existence/type checks), CLI integration tests for `index add/scan/remove/move` from subdirectories, `index move` with directory destinations (move into dir keeping name, trailing slash, new subdir creation, home containment) |
+| `test_papers_cli_path_resolution.py` | CLI integration tests for `papers add` and `textbooks add` from subdirectories (bare filename, absolute path, cwd independence) |
 | `conftest.py` | Shared fixtures: `sample_pdf_with_metadata`, `sample_pdf_no_metadata`, `sample_pdf_multipage` (generated on-the-fly via PyMuPDF) |
 | `fixtures/documents.py` | Duplicate of conftest.py fixtures (not currently imported) |
 
 ### Test Coverage Gaps
 
 - No tests for `DocxExtractor` or `MarkdownExtractor`
-- No tests for CLI commands (Click testing)
+- No tests for CLI search/get/bibtex/meta/ls/info/reference commands (Click testing)
 - No tests for `Config` class
-- No tests for `Indexer.scan_directory()`
+- No tests for `Indexer.scan_directory()` full sync logic
 - No tests for sidecar CRUD operations
 
 ## Dependencies
@@ -242,5 +246,7 @@ Located in `tests/`, run with `pytest`.
 
 ## Known Limitations
 
+- CLI path resolution (`cli/utils.py`) resolves user-supplied relative paths against CWD first, then validates containment within database home — the API does not use this helper (no CWD concept)
+- `index move` destination may be an existing directory (file keeps its name) or a new file path; both cwd-relative and absolute destinations are supported
 - **Snippet support:** `SearchResult` has a `snippet` field but it is never populated (always empty string)
 - **Migration runner:** Migration files exist but are reference-only; no automated migration execution

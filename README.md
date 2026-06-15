@@ -69,6 +69,18 @@ Interactive API docs available at `http://localhost:8000/docs`.
 
 All document paths are stored **relative** to the database home, making the index portable across machines. The database file itself can live independently (e.g. on local disk when home is a network mount).
 
+### CLI Path Resolution
+
+CLI commands resolve user-supplied relative paths against the current working directory first, then validate that the result is within the database home. This means you can work naturally from subdirectories:
+
+```bash
+cd ~/docs/home/proj_1
+docsearch papers add paper.pdf    # indexes as proj_1/paper.pdf
+docsearch index move paper.pdf ../proj_2  # moves into proj_2, keeping name
+```
+
+Absolute paths are also accepted but must reside within the database home. Paths outside the home produce a clear error message.
+
 ## Document Types
 
 | Type | Description |
@@ -115,7 +127,7 @@ docsearch [--home PATH] COMMAND
 | `index scan <DIR>` | Scan directory tree and sync index (`-T/--document-type TYPE`, `--no-recursive`) |
 | `index add <FILE>` | Add a single generic file to the index |
 | `index remove <FILE>` | Remove a file from the index |
-| `index move <SRC> <DST>` | Move an indexed file to a new location |
+| `index move <SRC> <DST>` | Move an indexed file (DST may be a directory or file path) |
 | `index status <FILE>` | Check if a file needs re-indexing |
 
 ### Search
@@ -293,6 +305,7 @@ docsearch/
 │   └── handlers.py  — DocumentHandler pipeline (generic, paper, textbook, reference)
 ├── extractors/      — Pluggable file-type extractors (PDF, DOCX, Markdown)
 ├── cli/             — Click-based CLI commands
+│   ├── utils.py     — CLI path resolution helper (CWD-aware, home-contained)
 └── server/          — FastAPI REST API
     ├── app.py       — App factory, lifespan, health endpoint
     ├── schemas.py   — Pydantic request/response schemas

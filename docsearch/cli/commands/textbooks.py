@@ -7,6 +7,7 @@ from typing import Any
 
 import click
 
+from docsearch.cli.utils import resolve_user_path_to_home_relative
 from docsearch.core.indexer import Indexer
 from docsearch.core.models import Chapter
 from docsearch.core.repository import Repository
@@ -20,7 +21,7 @@ def textbooks() -> None:
 
 
 @textbooks.command()
-@click.argument("filepath", type=click.Path(exists=True, dir_okay=False))
+@click.argument("filepath")
 @click.option(
     "-m", "--meta", "meta_pairs",
     multiple=True,
@@ -30,12 +31,13 @@ def textbooks() -> None:
 def add(ctx: dict, filepath: str, meta_pairs: tuple[str, ...]) -> None:
     """Add a textbook to the index."""
     config = ctx["config"]
+    rel_filepath = resolve_user_path_to_home_relative(config, filepath, require_exists=True)
     repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
         extra_meta = _parse_meta_pairs(meta_pairs)
 
-        doc = indexer.add_file(filepath, document_type="textbook", extra_metadata=extra_meta or None)
+        doc = indexer.add_file(rel_filepath, document_type="textbook", extra_metadata=extra_meta or None)
         if doc:
             click.echo(f"Indexed: {doc.path} (type={doc.document_type})")
         else:
@@ -294,17 +296,15 @@ def attach_chapter(ctx: dict, doc_id: int, chapter_filepath: str, chapter_index:
 
 
 @textbooks.command(name="chapters")
-@click.argument("filepath", type=click.Path(exists=True, dir_okay=False))
+@click.argument("filepath")
 @click.pass_obj
 def chapters(ctx: dict, filepath: str) -> None:
     """List all indexed chapters for a textbook."""
     config = ctx["config"]
+    rel_filepath = resolve_user_path_to_home_relative(config, filepath, require_file=True)
     repo = Repository(str(config.db_path), config.home)
     try:
-        # Convert user-supplied path to relative for DB lookup
-        abs_p = Path(filepath).resolve()
-        rel_p = str(abs_p.relative_to(config.home))
-        doc = repo.get(rel_p)
+        doc = repo.get(rel_filepath)
         if not doc:
             click.echo(f"Not indexed: {filepath}", err=True)
             return
@@ -328,18 +328,16 @@ def chapters(ctx: dict, filepath: str) -> None:
 
 
 @textbooks.command(name="chapter")
-@click.argument("filepath", type=click.Path(exists=True, dir_okay=False))
+@click.argument("filepath")
 @click.option("--index", "-i", required=True, type=int, help="Chapter index (zero-based).")
 @click.pass_obj
 def chapter(ctx: dict, filepath: str, index: int) -> None:
     """Print the full text of a specific chapter."""
     config = ctx["config"]
+    rel_filepath = resolve_user_path_to_home_relative(config, filepath, require_file=True)
     repo = Repository(str(config.db_path), config.home)
     try:
-        # Convert user-supplied path to relative for DB lookup
-        abs_p = Path(filepath).resolve()
-        rel_p = str(abs_p.relative_to(config.home))
-        doc = repo.get(rel_p)
+        doc = repo.get(rel_filepath)
         if not doc:
             click.echo(f"Not indexed: {filepath}", err=True)
             return
