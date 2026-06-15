@@ -57,15 +57,18 @@ async def add_paper(
         if not doc:
             raise HTTPException(status_code=500, detail="Failed to index paper.")
         indexed = repo.get(doc.path)
-        return PaperUploadResponse(
-            id=indexed.id,
-            path=indexed.path,
-            filename=indexed.filename,
-        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     finally:
         repo.close()
+
+    return PaperUploadResponse(
+        id=indexed.id,
+        path=indexed.path,
+        filename=indexed.filename,
+    )
 
 
 @router.post("/upload", response_model=PaperUploadResponse)
@@ -126,13 +129,16 @@ async def upload_paper(
         if not doc:
             raise HTTPException(status_code=500, detail="Failed to index uploaded paper.")
         indexed = repo.get(doc.path)
-        return PaperUploadResponse(
-            id=indexed.id,
-            path=indexed.path,
-            filename=indexed.filename,
-        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     finally:
         repo.close()
+
+    return PaperUploadResponse(
+        id=indexed.id,
+        path=indexed.path,
+        filename=indexed.filename,
+    )
 
 
 @router.post("/reference", response_model=PaperUploadResponse)

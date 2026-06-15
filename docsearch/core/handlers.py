@@ -420,7 +420,7 @@ class PaperDocumentHandler(DocumentHandler):
                     f"Title mismatch for {filepath}: pdf2bib returned "
                     f"'{bib_meta['title']}' but PDF metadata says '{pdf_title}'. "
                     "The wrong DOI may have been detected. "
-                    "Please provide the correct DOI manually (-m doi=...)."
+                    "Please provide the correct DOI manually (-m doi=...) or use --skip-bib."
                 )
 
         # Step 4: Move pdf2bib author list to ``authors_bib`` to avoid

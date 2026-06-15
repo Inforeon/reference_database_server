@@ -47,6 +47,8 @@ def add(ctx: dict, filepath: str, doi: str | None, skip_bib: bool, meta_pairs: t
             click.echo(f"Indexed: {doc.path} (type={doc.document_type})")
         else:
             click.echo(f"Failed to index: {filepath}", err=True)
+    except RuntimeError as e:
+        click.echo(f"Error: {e}", err=True)
     finally:
         repo.close()
 
@@ -98,6 +100,8 @@ def upload(ctx: dict, file, name: str | None, directory: str, doi: str | None, s
             click.echo(f"Uploaded & indexed: {doc.path}")
         else:
             click.echo(f"Failed to index uploaded file: {target_path}", err=True)
+    except RuntimeError as e:
+        click.echo(f"Error: {e}", err=True)
     finally:
         repo.close()
 

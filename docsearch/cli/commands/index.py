@@ -48,6 +48,8 @@ def scan(ctx: dict, dirpath: str, no_recursive: bool, document_type: str) -> Non
         click.echo(f"  Removed:   {stats['removed']}")
         click.echo(f"  Skipped:   {stats['skipped']}")
         click.echo(f"  Errors:    {stats['errors']}")
+    except RuntimeError as e:
+        click.echo(f"Error: {e}", err=True)
     finally:
         repo.close()
 

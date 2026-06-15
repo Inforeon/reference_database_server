@@ -30,6 +30,8 @@ async def scan_dir(
         indexer = Indexer(repo, config.home)
         stats = indexer.scan_directory(body.dirpath, recursive=body.recursive, document_type=body.document_type, extra_metadata=body.extra_metadata or None)
         return IndexStats(**stats)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except NotADirectoryError as e:
         raise HTTPException(status_code=400, detail=str(e))
     finally:
@@ -59,6 +61,8 @@ async def add_file(
                 "document_type": doc.document_type,
             }
         return None
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     finally:
