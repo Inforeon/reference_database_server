@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import click
 import json
 import logging
 import re
@@ -415,7 +416,36 @@ class PaperDocumentHandler(DocumentHandler):
         # Step 3: Title validation when no DOI was explicitly provided
         if not doi and bib_meta.get("title"):
             pdf_title = self._get_pdf_title(filepath)
-            if pdf_title and not _titles_match(bib_meta["title"], pdf_title):
+
+            title_ok = True
+            if not pdf_title:
+                title_ok = False
+            elif not _titles_match(bib_meta["title"], pdf_title):
+                title_ok = False
+
+            if not title_ok:
+                # In interactive CLI, ask user to confirm retrieved metadata
+                import sys
+                if sys.stdin.isatty():
+                    bib_title = bib_meta.get("title", "(none)")
+                    bib_author = bib_meta.get("author", bib_meta.get("authors_bib", "(none)"))
+                    print(f"\nRetrieved bibliographic metadata:")
+                    print(f"  Title:  {bib_title}")
+                    if isinstance(bib_author, list):
+                        print(f"  Author: {bib_author}")
+                    else:
+                        print(f"  Author: {bib_author}")
+                    if click.confirm("Is this correct?", default=True):
+                        title_ok = True
+
+            if not title_ok:
+                if not pdf_title:
+                    raise RuntimeError(
+                        f"Title lookup for {filepath}: pdf2bib returned "
+                        f"'{bib_meta['title']}' but the PDF has no title metadata. "
+                        "The wrong paper may have been looked up. "
+                        "Please provide the correct DOI manually (-m doi=...) or use --skip-bib."
+                    )
                 raise RuntimeError(
                     f"Title mismatch for {filepath}: pdf2bib returned "
                     f"'{bib_meta['title']}' but PDF metadata says '{pdf_title}'. "

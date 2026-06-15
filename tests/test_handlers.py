@@ -341,8 +341,8 @@ class TestTitleMismatchLogic:
         assert handler.extra_metadata.get("title") == "matching title"
         repo.close()
 
-    def test_no_pdf_title_skips_validation(self, tmp_path: Path):
-        """If the PDF has no title metadata, skip the mismatch check."""
+    def test_no_pdf_title_raises_error(self, tmp_path: Path):
+        """If the PDF has no title metadata, pdf2bib returning a title is suspicious."""
         from unittest.mock import patch
         from docsearch.core.handlers import PaperDocumentHandler
         from docsearch.core.repository import Repository
@@ -366,8 +366,9 @@ class TestTitleMismatchLogic:
             "bibtex": "@article{bib, title={Some Title From Bib}}",
         }
         with patch("pdf2bib.pdf2bib", return_value=fake_result):
-            # Should NOT raise — no PDF title to compare against
-            handler.pre_process(pdf_path)
+            # Should raise — pdf2bib found a title but PDF has none
+            with pytest.raises(RuntimeError, match="no title metadata"):
+                handler.pre_process(pdf_path)
 
         repo.close()
 
