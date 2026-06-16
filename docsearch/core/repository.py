@@ -105,8 +105,10 @@ class Repository:
         self.db_path = Path(db_path).resolve()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self.db_path))
+        self._conn.isolation_level = None  # Autocommit — no implicit read transactions
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._home = Path(home).resolve() if home else None
         self._init_schema()
@@ -202,6 +204,7 @@ class Repository:
     def transaction(self):
         """Provide a cursor wrapped in an auto-commit/rollback transaction."""
         cur = self._conn.cursor()
+        self._conn.execute("BEGIN")
         try:
             yield cur
             self._conn.commit()
