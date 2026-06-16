@@ -188,6 +188,8 @@ docsearch search -q QUERY [OPTIONS]
 | `papers upload <FILE>` | Upload and auto-index (`-n NAME`, `-D DIR`, `--doi`, `--skip-bib`, `-m KEY=VALUE`) |
 | `papers reference` | Register metadata-only paper reference (`-t TITLE`, `-a AUTHOR`, `-y YEAR`, `-j JOURNAL`, `-b BOOKTITLE`, `-d DOI`, `-u URL`, `-k CITATION_KEY`, `-p PATH`, `-m KEY=VALUE`) |
 
+**Note on DOI format:** When using `--doi`, provide a full DOI (e.g. `10.48550/arXiv.2506.13131` for arXiv papers). Bare arXiv IDs (e.g. `2506.13131`) may cause pdf2bib to hang indefinitely on network lookup with no timeout or error message. Use `--skip-bib` as a workaround if the DOI format is non-standard or the network call hangs.
+
 ### Textbooks
 
 | Command | Description |
