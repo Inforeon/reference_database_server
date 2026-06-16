@@ -366,8 +366,9 @@ class PaperDocumentHandler(DocumentHandler):
     1. If a DOI is provided in ``extra_metadata``, embed it into the PDF
        via ``pdf2doi.add_found_identifier_to_metadata`` before calling pdf2bib.
     2. Run pdf2bib to extract full bibliographic metadata.
-    3. If no DOI was provided, validate that the extracted title matches the
-       PDF's own metadata title; raise an error if they diverge.
+    3. Validate that the extracted title matches the PDF's own metadata title.
+       In interactive sessions, prompt the user to confirm if they diverge;
+       raise an error in non-interactive contexts or on rejection.
     4. Store the raw bibtex string and parsed metadata (including ordered
        author list) into ``extra_metadata`` so they persist in the sidecar.
 
@@ -413,8 +414,8 @@ class PaperDocumentHandler(DocumentHandler):
         bib_meta = results.get("metadata", {}) or {}
         bibtex_str = results.get("bibtex", "") or ""
 
-        # Step 3: Title validation when no DOI was explicitly provided
-        if not doi and bib_meta.get("title"):
+        # Step 3: Title validation — always check pdf2bib results against PDF metadata
+        if bib_meta.get("title"):
             pdf_title = self._get_pdf_title(filepath)
 
             title_ok = True
@@ -444,13 +445,13 @@ class PaperDocumentHandler(DocumentHandler):
                         f"Title lookup for {filepath}: pdf2bib returned "
                         f"'{bib_meta['title']}' but the PDF has no title metadata. "
                         "The wrong paper may have been looked up. "
-                        "Please provide the correct DOI manually (-m doi=...) or use --skip-bib."
+                        "Please verify the DOI or use --skip-bib."
                     )
                 raise RuntimeError(
                     f"Title mismatch for {filepath}: pdf2bib returned "
                     f"'{bib_meta['title']}' but PDF metadata says '{pdf_title}'. "
-                    "The wrong DOI may have been detected. "
-                    "Please provide the correct DOI manually (-m doi=...) or use --skip-bib."
+                    "The wrong paper may have been looked up. "
+                    "Please verify the DOI or use --skip-bib."
                 )
 
         # Step 4: Move pdf2bib author list to ``authors_bib`` to avoid

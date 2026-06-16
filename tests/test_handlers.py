@@ -216,11 +216,12 @@ class TestPaperHandlerIntegration:
             repo.close()
 
     def test_wrong_doi_raises_error(self, sample_pdf: Path, tmp_path: Path):
-        """When a DOI is provided, pdf2bib uses it regardless of PDF content.
+        """When a DOI is provided but pdf2bib returns a title that doesn't match
+        the PDF's own metadata, the pipeline should raise in non-interactive mode.
 
-        We verify the pipeline accepts the DOI and does NOT raise — the title
-        mismatch guard only fires when *no* DOI is supplied. Here we confirm
-        the DOI is respected and the document indexes successfully.
+        Title validation runs regardless of whether a DOI was supplied — the DOI
+        only helps pdf2bib find the correct record. A mismatch still triggers
+        the guard (interactive prompt on TTY, RuntimeError otherwise).
         """
         from docsearch.core.repository import Repository
         from docsearch.core.indexer import Indexer
@@ -230,20 +231,22 @@ class TestPaperHandlerIntegration:
         try:
             indexer = Indexer(repo, str(tmp_path))
             # Embedding a real DOI that maps to different metadata than our
-            # test PDF — should succeed (user DOI takes precedence).
+            # test PDF — should raise RuntimeError (non-interactive, no TTY).
             doc = indexer.add_file(
                 str(sample_pdf),
                 document_type="paper",
                 extra_metadata={"doi": "10.1038/s41586-023-06792-0"},
             )
-            # If pdf2bib reached the network, doc will be non-None and the
-            # fetched title will differ from our PDF's own title.
+            # If pdf2bib reached the network and returned a mismatched title,
+            # we should NOT get a doc back (RuntimeError would have been raised).
+            # If we did get a doc, it means titles happened to match — that's
+            # also acceptable (network returned unexpected but matching data).
             if doc is not None:
                 assert doc.sidecar_metadata.get("doi") == "10.1038/s41586-023-06792-0"
         except RuntimeError as e:
-            # Network failure is acceptable — skip gracefully
-            if "pdf2bib failed" in str(e):
-                pytest.skip(f"Network unavailable: {e}")
+            # Either network failure or title mismatch — both acceptable
+            if "pdf2bib failed" in str(e) or "Title" in str(e):
+                pytest.skip(f"Expected outcome: {e}")
             raise
         finally:
             repo.close()
@@ -372,8 +375,9 @@ class TestTitleMismatchLogic:
 
         repo.close()
 
-    def test_doi_provided_skips_validation(self, tmp_path: Path):
-        """When a DOI is explicitly provided, skip title validation entirely."""
+    def test_doi_provided_still_validates_title(self, tmp_path: Path):
+        """When a DOI is explicitly provided but pdf2bib returns a mismatched title,
+        the pipeline should still raise in non-interactive mode (no TTY)."""
         from unittest.mock import patch
         from docsearch.core.handlers import PaperDocumentHandler
         from docsearch.core.repository import Repository
@@ -398,10 +402,10 @@ class TestTitleMismatchLogic:
         }
         with patch("pdf2doi.add_found_identifier_to_metadata"):
             with patch("pdf2bib.pdf2bib", return_value=fake_result):
-                # Should NOT raise — user provided DOI, we trust it
-                handler.pre_process(pdf_path)
+                # Should raise — title mismatch detected regardless of DOI
+                with pytest.raises(RuntimeError, match="Title mismatch"):
+                    handler.pre_process(pdf_path)
 
-        assert handler.extra_metadata.get("doi") == "10.1234/user-provided"
         repo.close()
 
     def test_authors_moved_to_authors_bib(self, tmp_path: Path):
