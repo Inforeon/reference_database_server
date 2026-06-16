@@ -38,7 +38,7 @@ def add(ctx: dict, filepath: str, doi: str | None, skip_bib: bool, meta_pairs: t
     repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
-        extra_meta = _parse_meta_pairs(meta_pairs)
+        extra_meta = _parse_meta_pairs(meta_pairs) or {}
         if doi:
             extra_meta["doi"] = doi
 
@@ -90,7 +90,7 @@ def upload(ctx: dict, file, name: str | None, directory: str, doi: str | None, s
     repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
-        extra_meta = _parse_meta_pairs(meta_pairs)
+        extra_meta = _parse_meta_pairs(meta_pairs) or {}
         if doi:
             extra_meta["doi"] = doi
 
