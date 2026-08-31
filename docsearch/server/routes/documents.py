@@ -225,29 +225,21 @@ async def patch_meta(
     body: MetaPatch,
     config = Depends(get_config),
 ) -> dict:
-    """Update a key in the sidecar metadata for a document."""
+    """Update a key in the sidecar metadata for a document.
+
+    Writes the database column and the ``.meta.json`` file together, without
+    re-extracting the document.  Works for reference-only entries, which have
+    no file on disk to re-index.
+    """
     repo = Repository(str(config.db_path), config.home)
     try:
-        doc = repo.get_by_id(doc_id)
-        if not doc:
+        indexer = Indexer(repo, config.home)
+        if not indexer.set_metadata_key(doc_id, body.key, body.value):
             raise HTTPException(status_code=404, detail="Document not found")
 
-        sidecar = config.home / doc.path + ".meta.json"
-        data = {}
-        if sidecar.is_file():
-            with open(sidecar, "r") as f:
-                data = json.load(f)
-
-        data[body.key] = body.value
-
-        with open(sidecar, "w") as f:
-            json.dump(data, f, indent=2)
-
-        # Re-index to pick up new sidecar
-        indexer = Indexer(repo, config.home)
-        indexer.add_file(doc.path)
-
-        return {"updated": True, "key": body.key}
+        updated = repo.get_by_id(doc_id)
+        sidecar = updated.sidecar_metadata if updated else {}
+        return {"updated": True, "key": body.key, "metadata": sidecar}
     finally:
         repo.close()
 
@@ -460,8 +452,9 @@ async def detach_file(
         if abs_path.is_file():
             abs_path.unlink()
 
-        # Preserve the sidecar — do NOT delete it
-        sidecar_path = Path(str(abs_path) + ".meta.json")
+        # Preserve the sidecar (<path>.meta.json) — do NOT delete it.  It now
+        # backs a reference-only entry, where it is the durable copy of the
+        # document's metadata.
 
         # Clear extractable content in the DB (no file → nothing to extract)
         repo.update_document(

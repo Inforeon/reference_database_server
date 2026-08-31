@@ -5,9 +5,9 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Iterator, Optional
 
-from .models import Chapter, Document, SearchQuery, SearchResult
+from .models import Chapter, Document, SearchQuery, SearchResult, TextRow
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS documents (
@@ -96,6 +96,21 @@ END;
 CREATE INDEX IF NOT EXISTS idx_tc_textbook ON textbook_chapters(textbook_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tc_chapter ON textbook_chapters(textbook_id, chapter_index);
 """
+
+
+def _scope_clause(scope: str, column: str) -> tuple[str, list[Any]]:
+    """Build a predicate restricting ``column`` to documents under ``scope``.
+
+    A document stored *directly* in the scoped directory has a ``directory``
+    equal to the scope itself, so an exact match is required alongside the
+    descendant prefix — a bare ``LIKE '<scope>/%'`` drops those documents
+    silently.  A trailing slash on the scope is normalised away; a scope of
+    ``"/"`` imposes no restriction.
+    """
+    normalized = scope.rstrip("/")
+    if not normalized:
+        return "1=1", []
+    return f"({column} = ? OR {column} LIKE ?)", [normalized, f"{normalized}/%"]
 
 
 class Repository:
@@ -342,6 +357,67 @@ class Repository:
             cur.execute(sql, params)
             return cur.rowcount > 0
 
+    def update_sidecar_metadata(
+        self,
+        doc_id: int,
+        *,
+        patch: dict[str, Any] | None = None,
+        remove_keys: list[str] | None = None,
+    ) -> bool:
+        """Merge ``patch`` into, and drop ``remove_keys`` from, the sidecar column.
+
+        Read-modify-write happens inside a single transaction so concurrent
+        callers cannot interleave a lost update.  This is the DB half of a
+        metadata edit; writing the ``.meta.json`` file is the caller's job —
+        see :meth:`Indexer.set_metadata_key`, which keeps the two in step
+        without re-extracting the document.
+
+        Returns True when a row was updated, False if no such document.
+        """
+        with self.transaction() as cur:
+            row = cur.execute(
+                "SELECT sidecar_metadata FROM documents WHERE id = ?", (doc_id,)
+            ).fetchone()
+            if row is None:
+                return False
+
+            try:
+                data = json.loads(row["sidecar_metadata"] or "{}")
+            except json.JSONDecodeError:
+                data = {}
+            if not isinstance(data, dict):
+                data = {}
+
+            if patch:
+                data.update(patch)
+            for key in remove_keys or []:
+                data.pop(key, None)
+
+            cur.execute(
+                "UPDATE documents SET sidecar_metadata = ? WHERE id = ?",
+                (json.dumps(data), doc_id),
+            )
+            return True
+
+    def update_text(self, target: TextRow, text: str) -> bool:
+        """Replace a stored extracted text in place.
+
+        Writes only ``full_text`` — ``content_hash``, ``mtime`` and
+        ``indexed_at`` are left alone deliberately, since rewriting text the
+        program mangled is not evidence that the source file changed.  The FTS
+        index follows automatically via the ``*_au`` triggers.
+        """
+        if target.kind == "document":
+            table = "documents"
+        elif target.kind == "chapter":
+            table = "textbook_chapters"
+        else:
+            raise ValueError(f"Unknown text row kind: {target.kind!r}")
+
+        with self.transaction() as cur:
+            cur.execute(f"UPDATE {table} SET full_text = ? WHERE id = ?", (text, target.id))
+            return cur.rowcount > 0
+
     def all_paths(self) -> list[str]:
         """Return all indexed paths."""
         cur = self._conn.execute("SELECT path FROM documents ORDER BY path")
@@ -351,6 +427,41 @@ class Repository:
         """Return total number of indexed documents."""
         cur = self._conn.execute("SELECT COUNT(*) AS c FROM documents")
         return cur.fetchone()["c"]
+
+    def iter_texts(self, batch_size: int = 200) -> Iterator[TextRow]:
+        """Stream every stored extracted text — documents, then chapters.
+
+        Uses ``fetchmany`` so a large index is not materialised in memory all at
+        once.  Rows are snapshots; pair with :meth:`update_text` to write back.
+        Empty and NULL texts are skipped — there is nothing for a check to do.
+        """
+        yield from self._iter_query(
+            "SELECT id, path AS label, full_text FROM documents "
+            "WHERE full_text IS NOT NULL AND full_text != ''",
+            lambda row: TextRow("document", row["id"], row["label"], row["full_text"]),
+            batch_size,
+        )
+        yield from self._iter_query(
+            "SELECT c.id AS id, d.path || ' :: ' || c.title AS label, c.full_text AS full_text "
+            "FROM textbook_chapters c JOIN documents d ON d.id = c.textbook_id "
+            "WHERE c.full_text IS NOT NULL AND c.full_text != ''",
+            lambda row: TextRow("chapter", row["id"], row["label"], row["full_text"]),
+            batch_size,
+        )
+
+    def _iter_query(
+        self,
+        sql: str,
+        build: Callable[[sqlite3.Row], TextRow],
+        batch_size: int,
+    ) -> Iterator[TextRow]:
+        cur = self._conn.execute(sql)
+        while True:
+            rows = cur.fetchmany(batch_size)
+            if not rows:
+                return
+            for row in rows:
+                yield build(row)
 
     def search(self, query: SearchQuery) -> list[SearchResult]:
         """Execute a search query, returning ranked results.
@@ -369,8 +480,9 @@ class Repository:
 
         # Directory scope filter
         if query.scope:
-            conditions.append("d.directory LIKE ?")
-            params.append(f"{query.scope}/%")
+            clause, scope_params = _scope_clause(query.scope, "d.directory")
+            conditions.append(clause)
+            params.extend(scope_params)
 
         # File type / extension filter
         if query.file_type:
@@ -633,8 +745,9 @@ class Repository:
         params: list[Any] = []
 
         if query.scope:
-            conditions.append("directory LIKE ?")
-            params.append(f"{query.scope}/%")
+            clause, scope_params = _scope_clause(query.scope, "directory")
+            conditions.append(clause)
+            params.extend(scope_params)
 
         if query.file_type:
             conditions.append("extension = ?")

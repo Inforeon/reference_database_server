@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from .base import BaseExtractor
+from .base import BaseExtractor, sanitize_text
 from .pdf import PdfExtractor
 from .docx import DocxExtractor
 from .markdown import MarkdownExtractor
 
-__all__ = ["BaseExtractor", "load_extractors"]
+__all__ = ["BaseExtractor", "sanitize_text", "load_extractors"]
 
 
 def load_extractors() -> dict[str, BaseExtractor]:

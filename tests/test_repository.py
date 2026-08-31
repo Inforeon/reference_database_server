@@ -161,6 +161,46 @@ class TestRepository:
         assert len(results) == 1
         assert "/docs/" in results[0].document.path
 
+    def test_search_scope_includes_documents_directly_in_scope(self, repo: Repository):
+        """A document whose directory *is* the scope must be returned."""
+        repo.upsert(_make_doc("/docs/top.md", full_text="secret info"))
+        repo.upsert(_make_doc("/docs/a/1.md", full_text="secret info"))
+        repo.upsert(_make_doc("/public/b/2.md", full_text="secret info"))
+
+        results = repo.search(SearchQuery(q="secret", scope="/docs"))
+        paths = {r.document.path for r in results}
+        assert paths == {"/docs/top.md", "/docs/a/1.md"}
+
+    def test_search_scope_without_query_includes_direct_children(self, repo: Repository):
+        """The non-FTS branch applies the same scope semantics."""
+        repo.upsert(_make_doc("/docs/top.md", full_text="alpha"))
+        repo.upsert(_make_doc("/docs/a/1.md", full_text="alpha"))
+        repo.upsert(_make_doc("/other/2.md", full_text="alpha"))
+
+        results = repo.search(SearchQuery(scope="/docs"))
+        paths = {r.document.path for r in results}
+        assert paths == {"/docs/top.md", "/docs/a/1.md"}
+
+    def test_search_scope_trailing_slash_is_normalised(self, repo: Repository):
+        repo.upsert(_make_doc("/docs/top.md", full_text="secret info"))
+        repo.upsert(_make_doc("/docs/a/1.md", full_text="secret info"))
+
+        results = repo.search(SearchQuery(q="secret", scope="/docs/"))
+        assert {r.document.path for r in results} == {"/docs/top.md", "/docs/a/1.md"}
+
+    def test_search_scope_root_matches_everything(self, repo: Repository):
+        repo.upsert(_make_doc("/docs/top.md", full_text="secret info"))
+        repo.upsert(_make_doc("/public/b/2.md", full_text="secret info"))
+
+        results = repo.search(SearchQuery(q="secret", scope="/"))
+        assert len(results) == 2
+
+    def test_search_scope_is_not_a_partial_directory_match(self, repo: Repository):
+        """Scoping to /doc must not pick up /docs."""
+        repo.upsert(_make_doc("/docs/top.md", full_text="secret info"))
+        results = repo.search(SearchQuery(q="secret", scope="/doc"))
+        assert results == []
+
     def test_search_author_filter(self, repo: Repository):
         repo.upsert(_make_doc("/a/x.md", extracted_metadata={"author": "Alice"}, full_text="report"))
         repo.upsert(_make_doc("/a/y.md", extracted_metadata={"author": "Bob"}, full_text="report"))
@@ -377,6 +417,26 @@ class TestChapterRepository:
     def test_search_chapters_no_match_returns_empty(self, repo: Repository):
         results = repo.search_textbook_chapters(SearchQuery(q="nothing"))
         assert len(results) == 0
+
+    def test_search_chapters_scope_includes_textbooks_in_scope_dir(self, repo: Repository):
+        """Chapter search must see textbooks stored directly in the scoped directory."""
+
+        def add_book(rel_path: str) -> None:
+            tb = self._make_textbook(
+                repo, path=rel_path, filename=Path(rel_path).name,
+                directory=str(Path(rel_path).parent),
+            )
+            repo.upsert_chapter(
+                Chapter(textbook_id=tb.id, chapter_index=0, title="Ch1", full_text="physics content")
+            )
+
+        add_book("/library/book.pdf")          # directory == scope
+        add_book("/library/sub/book2.pdf")     # descendant of scope
+        add_book("/elsewhere/book3.pdf")       # outside scope
+
+        results = repo.search_textbook_chapters(SearchQuery(q="physics", scope="/library"))
+        paths = {r.document.path for r in results}
+        assert paths == {"/library/book.pdf", "/library/sub/book2.pdf"}
 
     def test_cascade_delete_on_document_remove(self, repo: Repository):
         tb = self._make_textbook(repo)

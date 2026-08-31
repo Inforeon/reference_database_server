@@ -63,6 +63,7 @@ from .commands import (
     ls,
     reference,
     document,
+    repair,
 )  # noqa: E402
 cli.add_command(index)
 cli.add_command(search)
@@ -74,6 +75,7 @@ cli.add_command(textbooks)
 cli.add_command(ls)
 cli.add_command(reference.reference)
 cli.add_command(document.document)
+cli.add_command(repair.repair)
 
 
 def main() -> None:

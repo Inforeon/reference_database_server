@@ -150,6 +150,8 @@ docsearch search -q QUERY [OPTIONS]
 | `--offset N` | Pagination offset |
 | `-f FORMAT` | Output: `text`, `json`, or `csv` (default: `text`) |
 
+**Scope semantics:** `--scope` matches the given directory *and everything under it*, including documents stored directly in that directory. Matching is on path components, so `--scope docs` includes `docs/paper.pdf` and `docs/sub/paper.pdf`, but not `docs_extra/paper.pdf`. An empty scope (or `/`) covers the whole index. Chapter results honour the same scope, matched against the parent textbook's directory.
+
 ### Document Retrieval
 
 | Command | Description |
@@ -175,10 +177,31 @@ docsearch search -q QUERY [OPTIONS]
 
 | Command | Description |
 |---|---|
-| `meta show <FILE>` | Display sidecar metadata |
-| `meta set <FILE>` | Set a key/value (`-k KEY -v VALUE`) |
-| `meta delete <FILE>` | Delete a key (`-k KEY`) |
+| `meta show <FILE>` | Display metadata (from the index; falls back to the sidecar file when the path isn't indexed) |
+| `meta set <FILE>` | Set a key on an indexed document (`-k KEY -v VALUE`) |
+| `meta delete <FILE>` | Remove a key from an indexed document (`-k KEY`) |
 | `meta init <FILE>` | Create empty sidecar file |
+
+`set` and `delete` update both places a metadata key lives — the `documents.sidecar_metadata` column (what search, tag filters and every read path use) and the `.meta.json` file (what a re-scan reads back) — in one step, without re-extracting the document. Writing only one of them would leave an edit either invisible or lost on the next scan. Reference-only entries are supported even though they have no file on disk; keys you added to `.meta.json` by hand survive when you edit a different key.
+
+**Value parsing (`-v`, and `-m KEY=VALUE` on every add/upload/reference command):** values are parsed as JSON when possible, so `-v 2018` stores the number `2018` and `-v '["ml","flow"]'` stores a list. Identifiers that look like numbers are lossy this way — `1706.03762` becomes the float `1706.0376`, losing the trailing zero — so quote them to keep the exact string:
+
+```bash
+docsearch meta set paper.pdf -k arxiv_id -v '"1706.03762"'
+```
+
+### Index Repair
+
+| Command | Description |
+|---|---|
+| `repair check` | Report what needs repairing, changing nothing (`--check NAME`, `-v`) |
+| `repair apply` | Repair it in place (`--check NAME`, `-v`) |
+
+| Check | Fixes |
+|---|---|
+| `control-characters` | Strips C0 control characters from stored document and chapter text — PyMuPDF wraps some inline-math glyph runs in U+0000/U+0001 markers, and a single embedded NUL makes SQLite's `length()` report the text as truncated at that point |
+
+Repairs cover only damage docsearch itself wrote into data it owns. Your own metadata keys are never treated as corruption and no check rewrites them. Applying a fix does not re-extract source files, so `content_hash`, `mtime` and `indexed_at` are left alone; running `apply` twice is harmless.
 
 ### Papers
 
@@ -227,6 +250,8 @@ All routes prefixed with `/api`.
 |---|---|---|
 | `GET` | `/search` | Full-text search (query params: `q`, `scope`, `file_type`, `author`, `tags`, `after`, `before`, `document_types`, `offset`, `limit`) → `{documents: {results, total}, chapters: {results, total}}` |
 
+`scope` behaves as it does in the CLI: the directory itself plus its subtree, matched on path components.
+
 ### Filesystem Browsing
 
 | Method | Endpoint | Description |
@@ -245,7 +270,7 @@ All document operations (metadata, content, file download, sidecar, BibTeX, move
 | `GET` | `/documents/{id}/content` | Get extracted text (`{id, path, filename, content}`) |
 | `GET` | `/documents/{id}/file` | Download original file (binary `FileResponse`; 404 for references) |
 | `GET` | `/documents/{id}/meta` | Get sidecar metadata |
-| `PATCH` | `/documents/{id}/meta` | Update sidecar key body: `{key, value}` → `{updated, key}` |
+| `PATCH` | `/documents/{id}/meta` | Update sidecar key body: `{key, value}` → `{updated, key, metadata}`. Writes the DB column and `.meta.json` together without re-extracting; works for reference-only entries (404 if no such document) |
 | `GET` | `/documents/{id}/bibtex` | Export BibTeX (papers only, 400 if not paper) |
 | `POST` | `/documents/{id}/move` | Move document body: `{destination}` → `{id, old_path, new_path, filename}` |
 | `POST` | `/documents/{id}/attach` | Attach file to reference-only entry (multipart, query: `directory`, `filename`) → converts source_type to "file, preserves existing metadata via sidecar |
@@ -301,9 +326,11 @@ Creating a directory-type textbook (`variant=directory`) requires the `filename`
 docsearch/
 ├── config.py        — Central Config (database home, db path resolution)
 ├── core/            — Data models, SQLite repository, indexer, handlers
-│   ├── models.py    — Document, Chapter, SearchResult, SearchQuery
+│   ├── models.py    — Document, Chapter, TextRow, SearchResult, SearchQuery
 │   ├── repository.py — SQLite + FTS5 repository
-│   ├── indexer.py   — Directory scanning, file add/remove
+│   ├── indexer.py   — Directory scanning, file add/remove, metadata edits
+│   ├── sidecars.py  — Sidecar (.meta.json) location and IO
+│   ├── repair.py    — Registry of integrity checks over stored data
 │   └── handlers.py  — DocumentHandler pipeline (generic, paper, textbook, reference)
 ├── extractors/      — Pluggable file-type extractors (PDF, DOCX, Markdown)
 ├── cli/             — Click-based CLI commands

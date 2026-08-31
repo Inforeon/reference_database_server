@@ -9,7 +9,8 @@ from typing import Any, Optional
 
 from .models import Document
 from .repository import Repository
-from ..extractors import load_extractors
+from .sidecars import load_sidecar, sidecar_path, write_sidecar
+from ..extractors import load_extractors, sanitize_text
 
 logger = logging.getLogger(__name__)
 
@@ -83,30 +84,17 @@ class DocumentHandler:
         return h.hexdigest()
 
     def _load_sidecar(self, filepath: Path) -> dict[str, Any]:
-        sidecar_path = Path(str(filepath) + ".meta.json")
-        if sidecar_path.is_file():
-            try:
-                with open(sidecar_path, "r") as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, IOError) as e:
-                logger.warning("Failed to load sidecar %s: %s", sidecar_path, e)
-        return {}
+        return load_sidecar(sidecar_path(filepath))
 
     def _save_sidecar(self, filepath: Path, metadata: dict[str, Any]) -> None:
         """Persist user-supplied extra metadata into the sidecar file on disk."""
         if not self.extra_metadata:
             return
-        sidecar_path = Path(str(filepath) + ".meta.json")
         # Load existing sidecar first (may have been created by other means)
         data = self._load_sidecar(filepath)
         # Merge: extra_metadata overrides existing sidecar values
         data.update(self.extra_metadata)
-        try:
-            sidecar_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(sidecar_path, "w") as f:
-                json.dump(data, f, indent=2)
-        except IOError as e:
-            logger.warning("Failed to save sidecar %s: %s", sidecar_path, e)
+        write_sidecar(sidecar_path(filepath), data)
 
     def _rel(self, filepath: Path) -> str:
         """Convert an absolute path to a relative path from home."""
@@ -156,7 +144,7 @@ class DocumentHandler:
             )
 
             doc = self.post_process(doc)
-            self.repo.upsert(doc)
+            doc.id = self.repo.upsert(doc)
 
             # Persist extra metadata to the sidecar file on disk
             self._save_sidecar(filepath, merged_sidecar)
@@ -231,7 +219,7 @@ class GenericDocumentHandler(DocumentHandler):
             )
 
             doc = self.post_process(doc)
-            self.repo.upsert(doc)
+            doc.id = self.repo.upsert(doc)
             return doc
         except Exception as e:
             logger.error("Generic reference handler failed: %s", e)
@@ -566,7 +554,7 @@ class PaperDocumentHandler(DocumentHandler):
             )
 
             doc = self.post_process(doc)
-            self.repo.upsert(doc)
+            doc.id = self.repo.upsert(doc)
 
             return doc
         except Exception as e:
@@ -708,23 +696,11 @@ class TextbookDocumentHandler(DocumentHandler):
 
     def _load_directory_sidecar(self, dirpath: Path) -> dict[str, Any]:
         """Load sidecar metadata from ``<dirname>.meta.json`` inside the directory."""
-        sidecar_path = dirpath / f"{dirpath.name}.meta.json"
-        if sidecar_path.is_file():
-            try:
-                with open(sidecar_path, "r") as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, IOError) as e:
-                logger.warning("Failed to load directory sidecar %s: %s", sidecar_path, e)
-        return {}
+        return load_sidecar(sidecar_path(dirpath, "directory"))
 
     def _save_directory_sidecar(self, dirpath: Path, metadata: dict[str, Any]) -> None:
         """Persist sidecar metadata to ``<dirname>.meta.json`` inside the directory."""
-        sidecar_path = dirpath / f"{dirpath.name}.meta.json"
-        try:
-            with open(sidecar_path, "w") as f:
-                json.dump(metadata, f, indent=2)
-        except IOError as e:
-            logger.warning("Failed to save directory sidecar %s: %s", sidecar_path, e)
+        write_sidecar(sidecar_path(dirpath, "directory"), metadata)
 
     def _enumerate_chapter_files(
         self, dirpath: Path, sidecar_meta: dict[str, Any]
@@ -922,7 +898,7 @@ class TextbookDocumentHandler(DocumentHandler):
             import fitz
             with fitz.open(str(filepath)) as doc:
                 pages = range(start_page, min(end_page, len(doc)))
-                return "\n\n".join(doc[i].get_text() for i in pages)
+                return sanitize_text("\n\n".join(doc[i].get_text() for i in pages))
         except Exception as e:
             logger.warning("Failed to extract pages %d:%d from %s: %s", start_page, end_page, filepath, e)
             return ""
@@ -994,7 +970,7 @@ class TextbookDocumentHandler(DocumentHandler):
             )
 
             doc = self.post_process(doc)
-            self.repo.upsert(doc)
+            doc.id = self.repo.upsert(doc)
             return doc
         except Exception as e:
             logger.error("Textbook reference handler failed: %s", e)

@@ -1,10 +1,46 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 import click
 
 from ..config import Config
+
+
+def parse_meta_value(raw: str) -> Any:
+    """Parse one ``-m``/``-v`` value, JSON first, raw string as fallback.
+
+    Values that parse as JSON become that JSON type — ``year=2018`` is stored
+    as the number 2018 and ``tags=["a","b"]`` as a list.  Everything else stays
+    a string.
+
+    To force a string, quote it *inside* the shell so the quotes reach us:
+    ``-m arxiv_id='"1706.03762"'``.  This matters for identifier-shaped numbers:
+    an unquoted ``arxiv_id=1710.04820`` parses as a float and silently loses the
+    trailing zero, since floats have no way to preserve it.
+    """
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return raw
+
+
+def parse_meta_pairs(pairs: tuple[str, ...]) -> dict[str, Any] | None:
+    """Parse ``-m KEY=VALUE`` pairs into a dict, or ``None`` if there are none.
+
+    A key is taken from everything before the first ``=``, so values may
+    contain further ``=`` characters.  Malformed pairs are reported and skipped.
+    """
+    meta: dict[str, Any] = {}
+    for pair in pairs:
+        if "=" not in pair:
+            click.echo(f"Invalid metadata pair: {pair} (expected KEY=VALUE)", err=True)
+            continue
+        key, value = pair.split("=", 1)
+        meta[key] = parse_meta_value(value)
+    return meta or None
 
 
 def resolve_user_path_to_home_relative(

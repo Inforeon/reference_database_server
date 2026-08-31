@@ -140,6 +140,21 @@ class Chapter:
         )
 
 
+@dataclass(frozen=True)
+class TextRow:
+    """A stored extracted-text payload, addressed independently of its table.
+
+    Lets a check treat document and chapter text uniformly instead of each one
+    growing a special case per table. ``label`` is what a human should be shown:
+    a document path, or ``<textbook path> :: <chapter title>``.
+    """
+
+    kind: str      # 'document' | 'chapter'
+    id: int        # documents.id or textbook_chapters.id
+    label: str
+    text: str
+
+
 @dataclass
 class SearchResult:
     """A single result from a search query."""

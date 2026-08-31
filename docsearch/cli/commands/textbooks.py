@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import json
 import shutil
 from pathlib import Path
 from typing import Any
 
 import click
 
-from docsearch.cli.utils import resolve_user_path_to_home_relative
+from docsearch.cli.utils import parse_meta_pairs, resolve_user_path_to_home_relative
 from docsearch.core.indexer import Indexer
 from docsearch.core.models import Chapter
 from docsearch.core.repository import Repository
@@ -25,7 +24,8 @@ def textbooks() -> None:
 @click.option(
     "-m", "--meta", "meta_pairs",
     multiple=True,
-    help="Extra metadata as KEY=VALUE (repeatable, JSON values supported).",
+    help="Extra metadata as KEY=VALUE (repeatable). Values are parsed as JSON "
+         "when possible; quote to keep a string: -m isbn='\"0000000000\"'.",
 )
 @click.pass_obj
 def add(ctx: dict, filepath: str, meta_pairs: tuple[str, ...]) -> None:
@@ -35,7 +35,7 @@ def add(ctx: dict, filepath: str, meta_pairs: tuple[str, ...]) -> None:
     repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
-        extra_meta = _parse_meta_pairs(meta_pairs)
+        extra_meta = parse_meta_pairs(meta_pairs)
 
         doc = indexer.add_file(rel_filepath, document_type="textbook", extra_metadata=extra_meta or None)
         if doc:
@@ -53,7 +53,8 @@ def add(ctx: dict, filepath: str, meta_pairs: tuple[str, ...]) -> None:
 @click.option(
     "-m", "--meta", "meta_pairs",
     multiple=True,
-    help="Extra metadata as KEY=VALUE (repeatable, JSON values supported).",
+    help="Extra metadata as KEY=VALUE (repeatable). Values are parsed as JSON "
+         "when possible; quote to keep a string: -m isbn='\"0000000000\"'.",
 )
 @click.pass_obj
 def upload(ctx: dict, file, name: str | None, directory: str, meta_pairs: tuple[str, ...]) -> None:
@@ -81,7 +82,7 @@ def upload(ctx: dict, file, name: str | None, directory: str, meta_pairs: tuple[
     repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
-        extra_meta = _parse_meta_pairs(meta_pairs)
+        extra_meta = parse_meta_pairs(meta_pairs)
 
         rel_target = str(target_path.relative_to(config.home))
         doc = indexer.add_file(rel_target, document_type="textbook", extra_metadata=extra_meta or None)
@@ -107,7 +108,8 @@ def upload(ctx: dict, file, name: str | None, directory: str, meta_pairs: tuple[
 @click.option(
     "-m", "--meta", "meta_pairs",
     multiple=True,
-    help="Extra metadata as KEY=VALUE (repeatable, JSON values supported).",
+    help="Extra metadata as KEY=VALUE (repeatable). Values are parsed as JSON "
+         "when possible; quote to keep a string: -m isbn='\"0000000000\"'.",
 )
 @click.pass_obj
 def reference(ctx: dict, title: str, author: str | None, year: str | None, publisher: str | None,
@@ -123,7 +125,7 @@ def reference(ctx: dict, title: str, author: str | None, year: str | None, publi
     repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
-        extra_meta = _parse_meta_pairs(meta_pairs) or {}
+        extra_meta = parse_meta_pairs(meta_pairs) or {}
         extra_meta["title"] = title
         if author:
             extra_meta["author"] = author
@@ -153,7 +155,8 @@ def reference(ctx: dict, title: str, author: str | None, year: str | None, publi
 @click.option(
     "-m", "--meta", "meta_pairs",
     multiple=True,
-    help="Extra metadata as KEY=VALUE (repeatable, JSON values supported).",
+    help="Extra metadata as KEY=VALUE (repeatable). Values are parsed as JSON "
+         "when possible; quote to keep a string: -m isbn='\"0000000000\"'.",
 )
 @click.pass_obj
 def init(ctx: dict, directory: str, title: str | None, meta_pairs: tuple[str, ...]) -> None:
@@ -179,7 +182,7 @@ def init(ctx: dict, directory: str, title: str | None, meta_pairs: tuple[str, ..
         click.echo("Directory must be within the database home.", err=True)
         return
 
-    extra_meta = _parse_meta_pairs(meta_pairs) or {}
+    extra_meta = parse_meta_pairs(meta_pairs) or {}
     if title:
         extra_meta["title"] = title
 
@@ -355,18 +358,3 @@ def chapter(ctx: dict, filepath: str, index: int) -> None:
     finally:
         repo.close()
 
-
-def _parse_meta_pairs(pairs: tuple[str, ...]) -> dict:
-    """Parse ``-m KEY=VALUE`` pairs into a dict."""
-    meta: dict = {}
-    for pair in pairs:
-        if "=" not in pair:
-            click.echo(f"Invalid metadata pair: {pair} (expected KEY=VALUE)", err=True)
-            continue
-        key, value = pair.split("=", 1)
-        try:
-            value = json.loads(value)
-        except (json.JSONDecodeError, TypeError):
-            pass
-        meta[key] = value
-    return meta if meta else None

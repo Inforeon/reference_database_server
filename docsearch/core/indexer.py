@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import shutil
 from pathlib import Path
@@ -10,6 +9,7 @@ from typing import Any, Optional
 from .models import Document
 from .repository import Repository
 from .handlers import get_handler
+from .sidecars import SIDECAR_SUFFIX, load_sidecar, sidecar_path, write_sidecar
 from ..extractors import load_extractors
 
 logger = logging.getLogger(__name__)
@@ -125,8 +125,8 @@ class Indexer:
             shutil.move(str(old_p), str(new_p))
 
             # Move the sidecar metadata file if it exists
-            old_sidecar = Path(str(old_p) + ".meta.json")
-            new_sidecar = Path(str(new_p) + ".meta.json")
+            old_sidecar = sidecar_path(old_p, doc.source_type)
+            new_sidecar = sidecar_path(new_p, doc.source_type)
             if old_sidecar.is_file():
                 shutil.move(str(old_sidecar), str(new_sidecar))
 
@@ -172,14 +172,72 @@ class Indexer:
 
         # 2. Write preserved metadata into sidecar so it takes precedence
         if existing_metadata:
-            sidecar_path = Path(str(p) + ".meta.json")
-            with open(sidecar_path, "w") as f:
-                json.dump(existing_metadata, f, indent=2)
+            write_sidecar(sidecar_path(p), existing_metadata)
 
         # 3. Re-index: extract file metadata + load sidecar (sidecar wins).
         # Pass skip_bib=True because bibliographic data is already preserved
         # in the sidecar; we don't want pdf2bib to fail on non-pdf files.
         return self.add_file(rel, document_type=document_type, skip_bib=True)
+
+    # ── metadata editing ────────────────────────────────────────
+
+    def set_metadata_key(self, doc_id: int, key: str, value: Any) -> bool:
+        """Set one sidecar metadata key on a document, in the DB and on disk.
+
+        Both stores are written so they converge: the column is what search,
+        tag filters and every read path use, while the ``.meta.json`` file is
+        what re-indexing reads back — an edit applied to only one of them is
+        either invisible or transient.  Neither the document nor its text is
+        re-extracted, so a one-key edit costs nothing regardless of file size.
+
+        The new value is applied on top of the stored column merged with the
+        file (file winning), so hand-edited sidecars — a documented workflow —
+        and DB-only keys both survive an edit to an unrelated key.
+
+        Returns False if no such document exists.  A sidecar that cannot be
+        written (e.g. a read-only database home) is logged, not raised: the
+        database edit has already committed and must not be undone.
+        """
+        return self._edit_metadata(doc_id, patch={key: value})
+
+    def delete_metadata_key(self, doc_id: int, key: str) -> bool:
+        """Remove one sidecar metadata key from a document, in DB and on disk.
+
+        Returns False if no such document exists; True when the key was absent
+        to begin with, since both stores end up in the requested state.
+        """
+        return self._edit_metadata(doc_id, remove_keys=[key])
+
+    def metadata_sidecar_path(self, doc: Document) -> Path:
+        """Absolute path of the sidecar file backing ``doc``."""
+        return sidecar_path((self.home / doc.path).resolve(), doc.source_type)
+
+    def _edit_metadata(
+        self,
+        doc_id: int,
+        *,
+        patch: dict[str, Any] | None = None,
+        remove_keys: list[str] | None = None,
+    ) -> bool:
+        doc = self.repo.get_by_id(doc_id)
+        if doc is None:
+            return False
+
+        sidecar = self.metadata_sidecar_path(doc)
+        merged: dict[str, Any] = {**doc.sidecar_metadata, **load_sidecar(sidecar)}
+        if patch:
+            merged.update(patch)
+        for key in remove_keys or []:
+            merged.pop(key, None)
+
+        updated = self.repo.update_sidecar_metadata(
+            doc_id, patch=merged, remove_keys=remove_keys
+        )
+        if not updated:
+            return False
+
+        write_sidecar(sidecar, merged)
+        return True
 
     def scan_directory(
         self,
@@ -218,7 +276,7 @@ class Indexer:
         for p in iterator:
             if not p.is_file():
                 continue
-            if str(p).endswith(".meta.json"):
+            if str(p).endswith(SIDECAR_SUFFIX):
                 stats["skipped"] += 1
                 continue
             ext = p.suffix.lower().lstrip(".")

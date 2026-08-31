@@ -2,8 +2,11 @@ from __future__ import annotations
 
 """Tests for REST API endpoints."""
 
+import json
+
 import pytest
 import httpx
+from pathlib import Path
 from fastapi.testclient import TestClient
 
 from docsearch.server.app import create_app
@@ -1922,3 +1925,167 @@ class TestAttachDetachEndpoints:
         # Title preserved through the cycle
         meta = client.get(f"/api/documents/{ref_id}/meta").json()
         assert meta.get("title") == "Round Trip Paper"
+
+
+class TestPatchMetaEndpoint:
+    """PATCH /api/documents/{id}/meta must keep the DB column and .meta.json in agreement.
+
+    A key written to only one of the two stores is either invisible to search and
+    tag filters (column) or silently lost on the next scan (file).
+    """
+
+    def _upload(self, client, name: str = "note.md", content: bytes = b"# Note\n\nBody text.") -> int:
+        resp = client.post(
+            "/api/documents/upload",
+            files={"file": (name, content, "text/markdown")},
+        )
+        assert resp.status_code == 200
+        return resp.json()["id"]
+
+    def _create_reference(self, client, title: str = "Patched Reference") -> int:
+        resp = client.post(
+            "/api/documents/papers/reference",
+            json={"title": title, "author": "Author", "year": "2024"},
+        )
+        assert resp.status_code == 200
+        return resp.json()["id"]
+
+    def _sidecar(self, db_home: str, doc_path: str) -> Path:
+        return Path(db_home) / (doc_path + ".meta.json")
+
+    # ── coherence tests ────────────────────────────────────────────
+
+    def test_patch_writes_both_column_and_file(self, client, db_home: str):
+        """Tag filters read the column; a rescan reads the file. Both must see the edit."""
+        doc_id = self._upload(client)
+        path = client.get(f"/api/documents/{doc_id}").json()["path"]
+
+        resp = client.patch(
+            f"/api/documents/{doc_id}/meta",
+            json={"key": "tags", "value": ["unread-tag"]},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["metadata"]["tags"] == ["unread-tag"]
+
+        hits = client.get("/api/search", params={"q": "Note", "tags": "unread-tag"}).json()
+        assert [h["document"]["id"] for h in hits["documents"]["results"]] == [doc_id]
+
+        assert json.loads(self._sidecar(db_home, path).read_text())["tags"] == ["unread-tag"]
+
+    def test_patch_file_lives_beside_document(self, client, db_home: str):
+        doc_id = self._upload(client)
+        path = client.get(f"/api/documents/{doc_id}").json()["path"]
+
+        client.patch(f"/api/documents/{doc_id}/meta", json={"key": "status", "value": "read"})
+
+        sidecar = self._sidecar(db_home, path)
+        assert sidecar.is_file()
+        assert json.loads(sidecar.read_text())["status"] == "read"
+
+    def test_patch_merges_rather_than_replaces(self, client, db_home: str):
+        doc_id = self._upload(client)
+
+        client.patch(f"/api/documents/{doc_id}/meta", json={"key": "a", "value": 1})
+        client.patch(f"/api/documents/{doc_id}/meta", json={"key": "b", "value": 2})
+
+        assert client.get(f"/api/documents/{doc_id}/meta").json()["a"] == 1
+        sidecar = self._sidecar(db_home, client.get(f"/api/documents/{doc_id}").json()["path"])
+        stored = json.loads(sidecar.read_text())
+        assert stored["a"] == 1 and stored["b"] == 2
+
+    def test_patch_survives_reindex(self, client, db_home: str):
+        """The file is what a rescan reads back — an edit lost there is lost for good."""
+        doc_id = self._upload(client)
+        path = client.get(f"/api/documents/{doc_id}").json()["path"]
+
+        client.patch(f"/api/documents/{doc_id}/meta", json={"key": "arxiv_id", "value": "2502.05171"})
+        resp = client.post("/api/index/add", json={"filepath": path})
+        assert resp.status_code == 200
+
+        assert client.get(f"/api/documents/{doc_id}/meta").json()["arxiv_id"] == "2502.05171"
+
+    def test_patch_does_not_reindex(self, client, db_home: str):
+        doc_id = self._upload(client, content=b"# Heading\n\nUnique body marker.")
+        before = client.get(f"/api/documents/{doc_id}").json()
+
+        client.patch(f"/api/documents/{doc_id}/meta", json={"key": "tag", "value": "x"})
+
+        after = client.get(f"/api/documents/{doc_id}").json()
+        assert after["indexed_at"] == before["indexed_at"]
+        assert "Unique body marker" in client.get(f"/api/documents/{doc_id}/content").json()["content"]
+
+    def test_patch_preserves_hand_written_sidecar_keys(self, client, db_home: str):
+        """Hand-edited .meta.json is a documented workflow; a PATCH must not clobber it."""
+        doc_id = self._upload(client)
+        path = client.get(f"/api/documents/{doc_id}").json()["path"]
+        sidecar = self._sidecar(db_home, path)
+        sidecar.write_text(json.dumps({"hand": "written"}))
+
+        client.patch(f"/api/documents/{doc_id}/meta", json={"key": "status", "value": "read"})
+
+        stored = json.loads(sidecar.read_text())
+        assert stored == {"hand": "written", "status": "read"}
+
+    # ── value handling ─────────────────────────────────────────────
+
+    def test_patch_accepts_structured_values(self, client, db_home: str):
+        doc_id = self._upload(client)
+        path = client.get(f"/api/documents/{doc_id}").json()["path"]
+
+        resp = client.patch(
+            f"/api/documents/{doc_id}/meta",
+            json={"key": "tags", "value": ["ml", "flow"]},
+        )
+        assert resp.status_code == 200
+
+        assert client.get(f"/api/documents/{doc_id}/meta").json()["tags"] == ["ml", "flow"]
+        assert json.loads(self._sidecar(db_home, path).read_text())["tags"] == ["ml", "flow"]
+
+    def test_patch_overwrites_existing_key(self, client, db_home: str):
+        doc_id = self._upload(client)
+
+        client.patch(f"/api/documents/{doc_id}/meta", json={"key": "status", "value": "unread"})
+        client.patch(f"/api/documents/{doc_id}/meta", json={"key": "status", "value": "read"})
+
+        assert client.get(f"/api/documents/{doc_id}/meta").json()["status"] == "read"
+
+    # ── references ─────────────────────────────────────────────────
+
+    def test_patch_on_reference_entry(self, client, db_home: str):
+        """Reference-only entries have no file on disk; their sidecar must still be written."""
+        ref_id = self._create_reference(client)
+        doc = client.get(f"/api/documents/{ref_id}").json()
+        assert doc["source_type"] == "reference"
+        assert not (Path(db_home) / doc["path"]).exists()
+
+        resp = client.patch(
+            f"/api/documents/{ref_id}/meta",
+            json={"key": "arxiv_id", "value": "1706.03762"},
+        )
+        assert resp.status_code == 200
+
+        sidecar = self._sidecar(db_home, doc["path"])
+        assert sidecar.is_file()
+        assert json.loads(sidecar.read_text())["arxiv_id"] == "1706.03762"
+        assert client.get(f"/api/documents/{ref_id}/meta").json()["arxiv_id"] == "1706.03762"
+
+    def test_patch_reference_keeps_bibliographic_metadata(self, client, db_home: str):
+        ref_id = self._create_reference(client, title="Kept Title")
+
+        client.patch(f"/api/documents/{ref_id}/meta", json={"key": "note", "value": "n"})
+
+        meta = client.get(f"/api/documents/{ref_id}/meta").json()
+        assert meta["title"] == "Kept Title"
+        assert meta["note"] == "n"
+
+    # ── errors ─────────────────────────────────────────────────────
+
+    def test_patch_unknown_document_is_404(self, client, db_home: str):
+        resp = client.patch("/api/documents/99999/meta", json={"key": "a", "value": "b"})
+        assert resp.status_code == 404
+
+    def test_patch_requires_key(self, client, db_home: str):
+        doc_id = self._upload(client)
+
+        resp = client.patch(f"/api/documents/{doc_id}/meta", json={"value": "b"})
+        assert resp.status_code == 422
