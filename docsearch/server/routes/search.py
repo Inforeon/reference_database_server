@@ -28,6 +28,7 @@ async def search(
     after: str = Query("", description="Modified after (ISO date)"),
     before: str = Query("", description="Modified before (ISO date)"),
     document_types: str = Query("", description="Comma-separated document types to include"),
+    raw_fts: bool = Query(False, description="Pass q to FTS5 verbatim instead of as plain text"),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     config = Depends(get_config),
@@ -37,6 +38,9 @@ async def search(
     Returns separated result groups: ``documents`` for generic/paper/textbook
     document-level results, ``chapters`` for textbook chapter results.
     Use ``document_types`` to filter which document types participate.
+    ``q`` is plain text by default — FTS5 operator characters (``-``, ``(``,
+    ``:``, ``*``) are searched for rather than parsed; set ``raw_fts`` to opt
+    into FTS5's own query syntax.
     """
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
     type_list = [t.strip() for t in document_types.split(",") if t.strip()] if document_types else []
@@ -50,6 +54,7 @@ async def search(
         after=after,
         before=before,
         document_types=type_list,
+        raw_fts=raw_fts,
         offset=offset,
         limit=limit,
     )

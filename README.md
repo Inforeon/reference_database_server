@@ -138,19 +138,24 @@ docsearch search -q QUERY [OPTIONS]
 
 | Option | Description |
 |---|---|
-| `-q, --query TEXT` | Full-text search query |
+| `-q, --query TEXT` | Full-text search query (plain text — see Query semantics) |
 | `--scope DIRECTORY` | Limit to subdirectory |
 | `--type EXTENSION` | Filter by file extension |
-| `--author NAME` | Filter by author |
+| `--author NAME` | Filter by author (partial names match; see below) |
 | `--tag TAG` | Filter by tag (repeatable) |
 | `--after DATE` | Modified after ISO date (YYYY-MM-DD) |
 | `--before DATE` | Modified before ISO date (YYYY-MM-DD) |
 | `--document-types TYPES` | Comma-separated document types (generic, paper, textbook, reference) |
+| `--raw-fts` | Pass `-q` to FTS5 verbatim, enabling its own query syntax |
 | `--limit N` | Max results (default: 50) |
 | `--offset N` | Pagination offset |
 | `-f FORMAT` | Output: `text`, `json`, or `csv` (default: `text`) |
 
 **Scope semantics:** `--scope` matches the given directory *and everything under it*, including documents stored directly in that directory. Matching is on path components, so `--scope docs` includes `docs/paper.pdf` and `docs/sub/paper.pdf`, but not `docs_extra/paper.pdf`. An empty scope (or `/`) covers the whole index. Chapter results honour the same scope, matched against the parent textbook's directory.
+
+**Query semantics:** `-q` is treated as plain text. FTS5 has its own query language in which a hyphen reads as a column qualifier and parentheses are syntax, so a raw `actor-critic` would raise `no such column: critic`. Each whitespace-separated term is therefore quoted before it reaches FTS5 (and terms are AND-ed), which makes `-`, `(`, `)`, `:`, `*`, `^`, `NEAR` and bare `OR` ordinary characters to search for rather than operators. A trailing `*` is still honoured as a prefix (`model*` matches "models"). Pass `--raw-fts` to opt out and use FTS5 syntax directly (`NEAR()`, column filters, `OR`, `^boost`).
+
+**Author matching:** `--author` reads the merged metadata — the curated sidecar value where one exists, otherwise the extractor's — across the `author`, `authors` and `authors_bib` fields, so a name added with `meta set` or `--skip-bib -m` is findable. It matches by *containment*, not equality: `Schulman` finds "John Schulman", name order is forgiven (`Schulman John`), and one name within a nineteen-author list matches. A document whose sidecar disagrees with the PDF's embedded author wins.
 
 ### Document Retrieval
 
@@ -177,10 +182,12 @@ docsearch search -q QUERY [OPTIONS]
 
 | Command | Description |
 |---|---|
-| `meta show <FILE>` | Display metadata (from the index; falls back to the sidecar file when the path isn't indexed) |
+| `meta show <FILE>` | Display metadata (`-k KEY` for one field; from the index, falling back to the sidecar file) |
 | `meta set <FILE>` | Set a key on an indexed document (`-k KEY -v VALUE`) |
 | `meta delete <FILE>` | Remove a key from an indexed document (`-k KEY`) |
-| `meta init <FILE>` | Create empty sidecar file |
+| `meta init <FILE>` | Create an empty sidecar file (leaves an existing one untouched) |
+
+**Path resolution:** `<FILE>` is resolved against the current directory first, then against the database home — so a home-relative path works from anywhere, and a cwd-relative one works as the shell would expect. A path that matches neither is an error naming what was tried, never silent empty output; `meta show` on a mistyped path used to print "no metadata" and exit 0, which was indistinguishable from a genuinely empty record.
 
 `set` and `delete` update both places a metadata key lives — the `documents.sidecar_metadata` column (what search, tag filters and every read path use) and the `.meta.json` file (what a re-scan reads back) — in one step, without re-extracting the document. Writing only one of them would leave an edit either invisible or lost on the next scan. Reference-only entries are supported even though they have no file on disk; keys you added to `.meta.json` by hand survive when you edit a different key.
 
@@ -212,6 +219,8 @@ Repairs cover only damage docsearch itself wrote into data it owns. Your own met
 | `papers reference` | Register metadata-only paper reference (`-t TITLE`, `-a AUTHOR`, `-y YEAR`, `-j JOURNAL`, `-b BOOKTITLE`, `-d DOI`, `-u URL`, `-k CITATION_KEY`, `-p PATH`, `-m KEY=VALUE`) |
 
 **Note on DOI format:** When using `--doi`, provide a full DOI (e.g. `10.48550/arXiv.2506.13131` for arXiv papers). Bare arXiv IDs (e.g. `2506.13131`) may cause pdf2bib to hang indefinitely on network lookup with no timeout or error message. Use `--skip-bib` as a workaround if the DOI format is non-standard or the network call hangs.
+
+**Title validation:** Retrieved bibliographic metadata is corroborated against the file before it is stored — the PDF's own title metadata when present, otherwise page 1 of its text. A lookup that resolved to the wrong record (a plausible-looking entry for a different paper) fails this check and raises rather than being saved silently; on an interactive terminal you are prompted to confirm instead. Titles and venues from DOI registries also have JATS/HTML markup stripped (`M<sup>2</sup>Diffuser` → `M2Diffuser`) before storage, so exports stay clean and correct records are not flagged as mismatches.
 
 ### Textbooks
 
@@ -248,7 +257,7 @@ All routes prefixed with `/api`.
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/search` | Full-text search (query params: `q`, `scope`, `file_type`, `author`, `tags`, `after`, `before`, `document_types`, `offset`, `limit`) → `{documents: {results, total}, chapters: {results, total}}` |
+| `GET` | `/search` | Full-text search (query params: `q`, `scope`, `file_type`, `author`, `tags`, `after`, `before`, `document_types`, `raw_fts`, `offset`, `limit`). `q` is plain text by default — FTS5 operator characters are searched, not parsed; set `raw_fts=true` for FTS5 syntax → `{documents: {results, total}, chapters: {results, total}}` |
 
 `scope` behaves as it does in the CLI: the directory itself plus its subtree, matched on path components.
 

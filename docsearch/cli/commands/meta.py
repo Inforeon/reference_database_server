@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import click
 
-from docsearch.cli.utils import parse_meta_value, resolve_user_path_to_home_relative
+from docsearch.cli.utils import (
+    describe_candidates,
+    document_path_candidates,
+    parse_meta_value,
+    relative_to_home,
+)
 from docsearch.config import Config
 from docsearch.core.indexer import Indexer
 from docsearch.core.models import Document
@@ -21,23 +25,34 @@ def meta() -> None:
 
 @meta.command(name="show")
 @click.argument("filepath")
+@click.option("-k", "--key", default="", help="Show one key instead of the whole record.")
 @click.pass_obj
-def meta_show(ctx: dict, filepath: str) -> None:
-    """Display the metadata for a file."""
+def meta_show(ctx: dict, filepath: str, key: str) -> None:
+    """Display the metadata for a file.
+
+    Reads the indexed record when there is one, otherwise the sidecar file on
+    disk, so hand-written metadata is readable before the file is added.
+    A path that matches neither is an error rather than empty output — silent
+    nothing is indistinguishable from "this document has no metadata".
+    """
     config = ctx["config"]
     repo = Repository(str(config.db_path), config.home)
     try:
         doc = _lookup(repo, config, filepath)
         if doc is not None:
-            click.echo(json.dumps(doc.sidecar_metadata, indent=2))
+            _emit(doc.sidecar_metadata, key, doc.path)
             return
 
-        # Not indexed — fall back to the file so hand-written sidecars are readable.
-        data = load_sidecar(_find_sidecar(filepath))
-        if data:
-            click.echo(json.dumps(data, indent=2))
-        else:
-            click.echo(f"No sidecar metadata for {filepath}")
+        found = _sidecar_on_disk(config, filepath)
+        if found is not None:
+            data, sidecar = found
+            _emit(data, key, str(sidecar))
+            return
+
+        raise click.ClickException(
+            f"{describe_candidates(filepath, document_path_candidates(config, filepath))} "
+            "is neither an indexed document nor a file with sidecar metadata."
+        )
     finally:
         repo.close()
 
@@ -95,22 +110,61 @@ def meta_delete(ctx: dict, filepath: str, key: str) -> None:
 
 
 @meta.command(name="init")
-@click.argument("filepath", type=click.Path(exists=True, dir_okay=False))
-def meta_init(filepath: str) -> None:
-    """Create an empty sidecar metadata file."""
-    sidecar = _find_sidecar(filepath)
+@click.argument("filepath")
+@click.pass_obj
+def meta_init(ctx: dict, filepath: str) -> None:
+    """Create an empty sidecar metadata file.
+
+    An existing sidecar is left alone — this command should never be the way a
+    populated record gets wiped.
+    """
+    config = ctx["config"]
+    candidates = document_path_candidates(config, filepath)
+    target = next((c for c in candidates if c.is_file()), None)
+    if target is None:
+        raise click.ClickException(
+            f"No such file: {describe_candidates(filepath, candidates)}"
+        )
+    if relative_to_home(config, target) is None:
+        raise click.ClickException(
+            f"'{target}' is outside the database home ('{config.home.resolve()}'). "
+            "Sidecars are only managed for files inside the home."
+        )
+
+    sidecar = sidecar_path(target)
+    if sidecar.exists():
+        click.echo(f"Already exists: {sidecar}")
+        return
     with open(sidecar, "w") as f:
         json.dump({}, f)
     click.echo(f"Created: {sidecar}")
 
 
 def _lookup(repo: Repository, config: Config, filepath: str) -> Document | None:
-    """Resolve a user-supplied path to an indexed document, or None."""
-    try:
-        rel = resolve_user_path_to_home_relative(config, filepath)
-    except click.ClickException:
-        return None
-    return repo.get(rel)
+    """Resolve a user-supplied path to an indexed document, or None.
+
+    Every candidate location is tried rather than just the cwd-relative one, so
+    a database-root-relative path works from any directory.  Resolution failures
+    stay quiet here — the caller turns "nothing matched" into an error that can
+    name everything it looked for.
+    """
+    for candidate in document_path_candidates(config, filepath):
+        rel = relative_to_home(config, candidate)
+        if rel is None:
+            continue
+        doc = repo.get(rel)
+        if doc is not None:
+            return doc
+    return None
+
+
+def _sidecar_on_disk(config: Config, filepath: str) -> tuple[dict, Path] | None:
+    """Load the first sidecar file belonging to one of the candidate paths."""
+    for candidate in document_path_candidates(config, filepath):
+        sidecar = sidecar_path(candidate)
+        if sidecar.is_file():
+            return load_sidecar(sidecar), sidecar
+    return None
 
 
 def _require_indexed(repo: Repository, config: Config, filepath: str) -> tuple[Document, int]:
@@ -123,11 +177,25 @@ def _require_indexed(repo: Repository, config: Config, filepath: str) -> tuple[D
     doc = _lookup(repo, config, filepath)
     if doc is None or doc.id is None:
         raise click.ClickException(
-            f"'{filepath}' is not an indexed document. Metadata edits apply to "
-            f"indexed entries — add it first, or check the path."
+            f"{describe_candidates(filepath, document_path_candidates(config, filepath))} "
+            "is not an indexed document. Metadata edits apply to indexed entries — "
+            "add it first, or check the path."
         )
     return doc, doc.id
 
 
-def _find_sidecar(filepath: str) -> Path:
-    return sidecar_path(Path(filepath).resolve())
+def _emit(data: dict, key: str, label: str) -> None:
+    """Print a metadata record, or just one key of it.
+
+    ``-k`` exists because an author-heavy paper record scrolls the interesting
+    fields off the terminal; strings print bare so they can be piped straight
+    into another command.
+    """
+    if not key:
+        click.echo(json.dumps(data, indent=2))
+        return
+    if key not in data:
+        available = ", ".join(sorted(data)) or "(none set)"
+        raise click.ClickException(f"'{key}' is not set on {label}. Available keys: {available}")
+    value = data[key]
+    click.echo(value if isinstance(value, str) else json.dumps(value, indent=2))

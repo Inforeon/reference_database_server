@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import click
+import html
 import json
 import logging
 import re
+import unicodedata
 from pathlib import Path
 from typing import Any, Optional
 
@@ -228,8 +230,31 @@ class GenericDocumentHandler(DocumentHandler):
 
 # ── BibTeX helpers ──────────────────────────────────────────────
 
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def strip_html_markup(value: str) -> str:
+    """Remove JATS/HTML markup that DOI registries embed in titles and venues.
+
+    Crossref renders ``M<sup>2</sup>Diffuser`` for what is really "M2Diffuser".
+    Stored verbatim that reads as corruption in exports, and it defeats title
+    comparison — the markup survives punctuation-stripping as literal letters, so
+    a perfectly correct record gets flagged as a mismatch.  Entities are decoded
+    first so ``&lt;sup&gt;`` cannot survive as visible markup either.
+
+    Applies to registry-derived text only: PDF properties and user-supplied
+    metadata are left exactly as given.
+    """
+    if not isinstance(value, str) or ("<" not in value and "&" not in value):
+        return value
+    cleaned = html.unescape(value)
+    cleaned = _HTML_TAG_RE.sub("", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
 def _normalize_title(title: str) -> str:
-    """Normalize a title for fuzzy comparison (lowercase, strip punctuation/extra ws)."""
+    """Normalize a title for fuzzy comparison (lowercase, strip markup/punctuation/extra ws)."""
+    title = unicodedata.normalize("NFKC", strip_html_markup(title))
     title = title.lower().strip()
     # Remove common punctuation
     title = re.sub(r"[^\w\s]", "", title)
@@ -250,6 +275,23 @@ def _titles_match(a: str, b: str) -> bool:
     if na in nb or nb in na:
         return True
     return False
+
+
+def _title_appears_in_text(title: str, text: str) -> bool:
+    """Check whether a title is present in a document's own text.
+
+    Normalisation ignores case, layout line-breaks, ligatures and markup, which
+    is what separates a title printed at the top of page 1 from one that merely
+    shares words with an abstract.  Used as corroboration when a file carries no
+    usable title metadata of its own: a retrieved record whose title appears
+    nowhere in the document did not come from this document, whatever registry it
+    claims to have resolved.  This is the platform-neutral check — it rejects a
+    wrong-lookup result without knowing which service produced it.
+    """
+    needle = _normalize_title(title)
+    if not needle:
+        return False
+    return needle in _normalize_title(text)
 
 
 def _format_author_dict(author_info: dict[str, Any]) -> str:
@@ -353,10 +395,12 @@ class PaperDocumentHandler(DocumentHandler):
     Workflow:
     1. If a DOI is provided in ``extra_metadata``, embed it into the PDF
        via ``pdf2doi.add_found_identifier_to_metadata`` before calling pdf2bib.
-    2. Run pdf2bib to extract full bibliographic metadata.
-    3. Validate that the extracted title matches the PDF's own metadata title.
-       In interactive sessions, prompt the user to confirm if they diverge;
-       raise an error in non-interactive contexts or on rejection.
+    2. Run pdf2bib to extract full bibliographic metadata, stripping any HTML
+       markup the registry embedded in title/journal/booktitle.
+    3. Corroborate the extracted title against the file — its own metadata title
+       when present, otherwise page 1 of its text — and prompt (interactive) or
+       raise (non-interactive) when they disagree, so a lookup that resolved to
+       the wrong record is not silently stored.
     4. Store the raw bibtex string and parsed metadata (including ordered
        author list) into ``extra_metadata`` so they persist in the sidecar.
 
@@ -402,15 +446,29 @@ class PaperDocumentHandler(DocumentHandler):
         bib_meta = results.get("metadata", {}) or {}
         bibtex_str = results.get("bibtex", "") or ""
 
-        # Step 3: Title validation — always check pdf2bib results against PDF metadata
+        # Registry-derived text carries JATS/HTML markup — Crossref renders a
+        # title as "M<sup>2</sup>Diffuser".  Clean it before validating or
+        # storing so the value is usable in exports and comparable to the PDF's
+        # own title; otherwise correct data reads as corruption and trips the
+        # mismatch guard below.
+        for field in ("title", "journal", "booktitle"):
+            if isinstance(bib_meta.get(field), str):
+                bib_meta[field] = strip_html_markup(bib_meta[field])
+
+        # Step 3: Title validation — corroborate pdf2bib results against the file.
         if bib_meta.get("title"):
             pdf_title = self._get_pdf_title(filepath)
-
-            title_ok = True
-            if not pdf_title:
-                title_ok = False
-            elif not _titles_match(bib_meta["title"], pdf_title):
-                title_ok = False
+            if pdf_title:
+                title_ok = _titles_match(bib_meta["title"], pdf_title)
+            else:
+                # No embedded title to compare against.  Trusting the lookup here
+                # is how a wrong-record result gets stored, and rejecting every
+                # title-less PDF is too blunt — so require the retrieved title to
+                # appear in the document's own text.  A record for a different
+                # paper will not, whatever registry handed it back.
+                title_ok = _title_appears_in_text(
+                    bib_meta["title"], self._first_page_text(filepath)
+                )
 
             if not title_ok:
                 # In interactive CLI, ask user to confirm retrieved metadata
@@ -431,7 +489,8 @@ class PaperDocumentHandler(DocumentHandler):
                 if not pdf_title:
                     raise RuntimeError(
                         f"Title lookup for {filepath}: pdf2bib returned "
-                        f"'{bib_meta['title']}' but the PDF has no title metadata. "
+                        f"'{bib_meta['title']}' but the PDF has no title metadata "
+                        "and that title does not appear in its text. "
                         "The wrong paper may have been looked up. "
                         "Please verify the DOI or use --skip-bib."
                     )
@@ -465,6 +524,15 @@ class PaperDocumentHandler(DocumentHandler):
             meta = doc.metadata
             doc.close()
             return meta.get("title", "")
+        except Exception:
+            return ""
+
+    def _first_page_text(self, filepath: Path) -> str:
+        """Text of the first page, for corroborating a title the PDF does not embed."""
+        try:
+            import fitz
+            with fitz.open(str(filepath)) as doc:
+                return doc[0].get_text() if len(doc) else ""
         except Exception:
             return ""
 

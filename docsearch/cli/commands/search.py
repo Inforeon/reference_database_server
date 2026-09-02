@@ -4,6 +4,7 @@ from datetime import datetime
 
 import click
 
+from docsearch.core.handlers import _format_author_dict
 from docsearch.core.models import SearchQuery
 from docsearch.core.repository import Repository
 
@@ -12,11 +13,21 @@ from docsearch.core.repository import Repository
 @click.option("-q", "--query", default="", help="Full-text search query.")
 @click.option("--scope", default="", help="Restrict search to a subdirectory prefix.")
 @click.option("--type", "file_type", default="", help="Filter by file extension (pdf, docx, md…).")
-@click.option("--author", default="", help="Filter by author metadata field.")
+@click.option(
+    "--author", default="",
+    help="Filter by author. Matches any name in the merged metadata, so partial "
+         "names work — 'Schulman' finds 'John Schulman'.",
+)
 @click.option("--tag", "tags", multiple=True, help="Filter by tag(s). Can be repeated.")
 @click.option("--after", default="", help="Filter documents modified after ISO date (YYYY-MM-DD).")
 @click.option("--before", default="", help="Filter documents modified before ISO date (YYYY-MM-DD).")
 @click.option("--document-types", default="", help="Filter by document type(s): generic, paper, textbook, reference (comma-separated).")
+@click.option(
+    "--raw-fts", is_flag=True, default=False,
+    help="Pass -q to FTS5 verbatim, enabling its query syntax (column filters, "
+         "NEAR, OR, ^boost). Off by default: operator characters like '-' then "
+         "crash the query instead of being searched for.",
+)
 @click.option("--limit", default=50, type=int, help="Max results to return.")
 @click.option("--offset", default=0, type=int, help="Skip N results.")
 @click.option(
@@ -37,6 +48,7 @@ def search(
     after: str,
     before: str,
     document_types: str,
+    raw_fts: bool,
     limit: int,
     offset: int,
     output_format: str,
@@ -55,6 +67,7 @@ def search(
             after=after,
             before=before,
             document_types=doc_types_list,
+            raw_fts=raw_fts,
             limit=limit,
             offset=offset,
         )
@@ -131,4 +144,26 @@ def get_tags(doc) -> list[str]:
 
 
 def get_author(doc) -> str | None:
-    return doc.combined_metadata.get("author")
+    """Render the document's authors for display, whatever shape they are stored in.
+
+    Papers hold a plain string, a list of names, or pdf2bib's ``authors_bib``
+    dicts depending on how they were added; echoing the raw value printed a
+    Python list repr where a byline belongs.  Names are separated with ``"; "``
+    because the dict form is itself comma-separated ("Schulman, John").
+    """
+    meta = doc.combined_metadata
+    for key in ("author", "authors", "authors_bib"):
+        value = meta.get(key)
+        if not value:
+            continue
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            names = [
+                _format_author_dict(v) if isinstance(v, dict) else str(v)
+                for v in value
+                if v
+            ]
+            if names:
+                return "; ".join(names)
+    return None

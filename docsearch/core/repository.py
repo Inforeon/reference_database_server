@@ -113,6 +113,111 @@ def _scope_clause(scope: str, column: str) -> tuple[str, list[Any]]:
     return f"({column} = ? OR {column} LIKE ?)", [normalized, f"{normalized}/%"]
 
 
+def fts_match_query(raw: str) -> str:
+    """Compile free-form text into an FTS5 ``MATCH`` expression.
+
+    FTS5 binds its own query language, so a hyphen is a column qualifier and a
+    parenthesis is syntax rather than part of a word: ``actor-critic`` raises
+    ``no such column: critic``.  Each whitespace-separated term is therefore
+    wrapped in a double-quoted string literal (with embedded quotes doubled),
+    which makes every operator character — ``-``, ``:``, ``*``, ``^``, ``(``,
+    ``NEAR``, bare ``OR`` — ordinary text again, and terms are combined with
+    ``AND``.
+
+    A trailing ``*`` is kept *outside* the quotes, where FTS5 reads it as a
+    prefix operator, so ``model*`` still matches "models".  Anywhere else the
+    character loses its meaning; that is the trade for not crashing, and
+    ``SearchQuery.raw_fts`` is the escape hatch for callers who want FTS5
+    syntax passed through untouched.
+
+    A query with no usable term compiles to an empty string literal, which
+    matches nothing — FTS5 rejects a genuinely empty expression with a syntax
+    error, and returning every document would be worse than returning none.
+    """
+    terms: list[str] = []
+    for token in raw.split():
+        prefix = token.endswith("*")
+        core = token.rstrip("*") if prefix else token
+        if not core:
+            continue
+        literal = '"' + core.replace('"', '""') + '"'
+        terms.append(literal + ("*" if prefix else ""))
+    if not terms:
+        return '""'
+    return " AND ".join(terms)
+
+
+# Metadata fields that can hold author names, in the order they are consulted.
+# ``authors_bib`` carries pdf2bib's ordered list of ``{given, family}`` dicts;
+# ``author`` is what PDF properties and hand-curated sidecars use.
+_AUTHOR_FIELDS = ("author", "authors", "authors_bib")
+
+
+def _json_object(column: str) -> str:
+    """Read a metadata column as an object, tolerating a malformed row.
+
+    Every JSON function raises on invalid input, which would turn one damaged
+    row into a failed search; the reader paths in this codebase already treat
+    unparseable metadata as empty rather than fatal.
+    """
+    return f"CASE WHEN json_valid({column}) THEN {column} ELSE '{{}}' END"
+
+
+def _merged_field(field: str, alias: str = "") -> str:
+    """SQL expression for one metadata field, sidecar preferred over extracted.
+
+    Mirrors :attr:`Document.combined_metadata`, which is what display, export
+    and BibTeX use — a filter that reads only ``extracted_metadata`` cannot see
+    anything curated with ``meta set`` or added with ``--skip-bib -m``.
+    """
+    prefix = f"{alias}." if alias else ""
+    return (
+        f"COALESCE(json_extract({_json_object(prefix + 'sidecar_metadata')}, '$.{field}'), "
+        f"json_extract({_json_object(prefix + 'extracted_metadata')}, '$.{field}'))"
+    )
+
+
+def _as_json_array(value: str) -> str:
+    """Wrap a metadata value in a JSON array unless it already is one.
+
+    Author data arrives as a string (``"A and B"``), a list of strings, or a
+    list of dicts; normalising to an array lets ``json_each`` handle all three.
+    A NULL field becomes ``[NULL]``, whose elements simply never match.
+    """
+    return (
+        f"CASE WHEN json_valid({value}) AND json_type({value}) = 'array' "
+        f"THEN {value} ELSE json_array({value}) END"
+    )
+
+
+def _author_clause(author: str, alias: str = "") -> tuple[str, list[Any]]:
+    """Build a predicate matching documents crediting ``author``.
+
+    Matches by *containment*, not equality — an exact comparison against the
+    whole field could never match one of the nineteen names in an author list.
+    The query is split into whitespace-separated tokens that all have to appear
+    within a single author entry, which forgives name order ("Schulman John"),
+    middle names, and ``{given, family}`` dicts where the parts are separated by
+    JSON syntax rather than a space.  Comparison is case-insensitive; ``instr``
+    is used instead of ``LIKE`` so ``%`` and ``_`` stay literal characters.
+
+    Each field in :data:`_AUTHOR_FIELDS` is resolved through the merged
+    metadata view, and a document matches if any of them credit the author.
+    """
+    tokens = [t.lower() for t in author.split() if t]
+    if not tokens:
+        return "1=1", []
+
+    params: list[Any] = []
+    per_field: list[str] = []
+    for field in _AUTHOR_FIELDS:
+        array = _as_json_array(_merged_field(field, alias))
+        match = " AND ".join(["instr(lower(e.value), ?) > 0"] * len(tokens))
+        per_field.append(f"EXISTS (SELECT 1 FROM json_each({array}) e WHERE {match})")
+        params.extend(tokens)
+    return "(" + " OR ".join(per_field) + ")", params
+
+
 class Repository:
     """SQLite-backed repository for storing and searching indexed documents."""
 
@@ -467,7 +572,8 @@ class Repository:
         """Execute a search query, returning ranked results.
 
         Combines FTS5 full-text matching with WHERE clause filters.
-        Builds dynamic SQL based on which filters are provided.
+        Builds dynamic SQL based on which filters are provided.  ``query.q`` is
+        treated as plain text and compiled for FTS5 unless ``raw_fts`` is set.
         """
         conditions: list[str] = []
         params: list = []
@@ -476,7 +582,7 @@ class Repository:
         # FTS full-text match — must use bare table name, not alias
         if use_fts:
             conditions.append("documents_fts MATCH ?")
-            params.append(query.q)
+            params.append(query.q if query.raw_fts else fts_match_query(query.q))
 
         # Directory scope filter
         if query.scope:
@@ -491,8 +597,9 @@ class Repository:
 
         # Author metadata filter
         if query.author:
-            conditions.append("json_extract(d.extracted_metadata, '$.author') = ?")
-            params.append(query.author)
+            clause, author_params = _author_clause(query.author, "d")
+            conditions.append(clause)
+            params.extend(author_params)
 
         # Document type filter
         if query.document_types:
@@ -502,7 +609,7 @@ class Repository:
 
         # Tags filter — check JSON array contains each tag
         for tag in query.tags:
-            conditions.append("json_extract(d.sidecar_metadata, '$.tags') LIKE ?")
+            conditions.append(f"json_extract({_json_object('d.sidecar_metadata')}, '$.tags') LIKE ?")
             params.append(f"%\"{tag}\"%")
 
         # Date range filters on mtime
@@ -636,7 +743,8 @@ class Repository:
         """Search textbook chapters using a two-phase approach.
 
         Phase 1: Resolve which textbooks match metadata filters.
-        Phase 2: Search FTS within those textbooks' chapters.
+        Phase 2: Search FTS within those textbooks' chapters.  ``query.q`` is
+        compiled for FTS5 the same way document search compiles it.
         """
         # Phase 1 — find matching textbook ids from metadata filters
         textbook_ids = self._resolve_textbook_ids(query)
@@ -652,7 +760,7 @@ class Repository:
 
         if use_fts:
             conditions.append("textbook_chapters_fts MATCH ?")
-            params.append(query.q)
+            params.append(query.q if query.raw_fts else fts_match_query(query.q))
 
         where_clause = " AND ".join(conditions) if conditions else "1=1"
 
@@ -754,11 +862,12 @@ class Repository:
             params.append(query.file_type)
 
         if query.author:
-            conditions.append("json_extract(extracted_metadata, '$.author') = ?")
-            params.append(query.author)
+            clause, author_params = _author_clause(query.author)
+            conditions.append(clause)
+            params.extend(author_params)
 
         for tag in query.tags:
-            conditions.append("json_extract(sidecar_metadata, '$.tags') LIKE ?")
+            conditions.append(f"json_extract({_json_object('sidecar_metadata')}, '$.tags') LIKE ?")
             params.append(f"%\"{tag}\"%")
 
         if query.after:

@@ -8,9 +8,11 @@ from pathlib import Path
 from docsearch.core.handlers import (
     _normalize_title,
     _titles_match,
+    _title_appears_in_text,
     _format_author_dict,
     _format_authors_bib,
     _generate_bibtex_from_metadata,
+    strip_html_markup,
 )
 
 
@@ -616,4 +618,118 @@ class TestTextbookHandler:
         combined = ch.combined_metadata(doc)
         assert combined["author"] == "Test Author"
         assert combined["title"] == "Test Textbook"
+        repo.close()
+
+
+def _pdf_with_text(tmp_path: Path, name: str, page_text: str, embedded_title: str | None = None) -> Path:
+    """A one-page PDF with given body text and optionally an embedded title."""
+    import fitz
+
+    doc = fitz.open()
+    doc.new_page().insert_text((72, 72), page_text)
+    if embedded_title is not None:
+        doc.set_metadata({"title": embedded_title})
+    path = tmp_path / name
+    doc.save(str(path))
+    doc.close()
+    return path
+
+
+class TestStripHtmlMarkup:
+    """Crossref/JATS embed markup in titles; it must not reach storage."""
+
+    def test_strips_tags(self):
+        assert strip_html_markup("M<sup>2</sup>Diffuser") == "M2Diffuser"
+
+    def test_unescapes_then_strips_double_encoded_tags(self):
+        assert strip_html_markup("&lt;i&gt;italic&lt;/i&gt; text") == "italic text"
+
+    def test_decodes_entities(self):
+        assert strip_html_markup("A &amp; B") == "A & B"
+
+    def test_collapses_whitespace_left_by_tags(self):
+        assert strip_html_markup("foo <br> bar") == "foo bar"
+
+    def test_plain_text_unchanged(self):
+        assert strip_html_markup("Just a title") == "Just a title"
+
+    def test_non_string_passes_through(self):
+        assert strip_html_markup(2014) == 2014
+
+
+class TestTitleNormalization:
+    def test_normalize_strips_markup(self):
+        assert _normalize_title("M<sup>2</sup>Diffuser") == "m2diffuser"
+
+    def test_normalize_nfkc_superscript(self):
+        # A literal superscript two normalises to "2".
+        assert _normalize_title("M\u00b2 Diffusion") == "m2 diffusion"
+
+    def test_titles_match_across_markup(self):
+        assert _titles_match("M<sup>2</sup>Diffuser", "M2Diffuser") is True
+
+    def test_title_appears_in_text_positive(self):
+        text = "We prove the policy gradient theorem here."
+        assert _title_appears_in_text("Policy Gradient Theorem", text) is True
+
+    def test_title_appears_in_text_negative(self):
+        text = "A paper about entirely different topology results."
+        assert _title_appears_in_text("Policy Gradient Theorem", text) is False
+
+
+class TestTitleCorroboration:
+    """When the PDF has no embedded title, a retrieved record must be corroborated
+    against page 1 rather than trusted — this rejects wrong-lookup results."""
+
+    def test_accepts_title_present_on_page_one(self, tmp_path: Path):
+        from unittest.mock import patch
+        from docsearch.core.handlers import PaperDocumentHandler
+        from docsearch.core.repository import Repository
+
+        title = "AlphaEvolve: A programming agent for scientific discovery"
+        pdf = _pdf_with_text(tmp_path, "ae.pdf", title)  # no embedded metadata title
+        repo = Repository(str(tmp_path / "t.db"))
+        handler = PaperDocumentHandler(repo, str(tmp_path))
+        handler.extra_metadata = {}
+
+        fake = {"metadata": {"title": title}, "bibtex": ""}
+        with patch("pdf2bib.pdf2bib", return_value=fake):
+            handler.pre_process(pdf)  # must not raise — title corroborated by page text
+
+        assert handler.extra_metadata["title"] == title
+        repo.close()
+
+    def test_rejects_unrelated_record_without_embedded_title(self, tmp_path: Path):
+        from unittest.mock import patch
+        from docsearch.core.handlers import PaperDocumentHandler
+        from docsearch.core.repository import Repository
+
+        pdf = _pdf_with_text(tmp_path, "x.pdf", "Totally unrelated content about topology.")
+        repo = Repository(str(tmp_path / "t.db"))
+        handler = PaperDocumentHandler(repo, str(tmp_path))
+        handler.extra_metadata = {}
+
+        fake = {"metadata": {"title": "Some Unrelated 2014 Example Record"}, "bibtex": ""}
+        with patch("pdf2bib.pdf2bib", return_value=fake):
+            with pytest.raises(RuntimeError, match="no title metadata"):
+                handler.pre_process(pdf)
+
+        repo.close()
+
+    def test_stores_markup_free_title(self, tmp_path: Path):
+        from unittest.mock import patch
+        from docsearch.core.handlers import PaperDocumentHandler
+        from docsearch.core.repository import Repository
+
+        # PDF's own title is clean; registry hands back a marked-up variant.
+        pdf = _pdf_with_text(tmp_path, "m2.pdf", "body", embedded_title="M2Diffuser")
+        repo = Repository(str(tmp_path / "t.db"))
+        handler = PaperDocumentHandler(repo, str(tmp_path))
+        handler.extra_metadata = {}
+
+        fake = {"metadata": {"title": "M<sup>2</sup>Diffuser"}, "bibtex": "@article{x}"}
+        with patch("pdf2bib.pdf2bib", return_value=fake):
+            handler.pre_process(pdf)  # cleaned title matches the PDF, so accepted
+
+        assert handler.extra_metadata["title"] == "M2Diffuser"
         repo.close()

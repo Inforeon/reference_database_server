@@ -290,6 +290,99 @@ class TestCliMeta:
         assert repo.get_by_id(doc_id).sidecar_metadata["tag"] == "x"
 
 
+class TestCliMetaPathsAndKeyFilter:
+    """Round-2 bugs: paths must resolve against home from any cwd and fail loudly;
+    ``show`` needs a ``-k`` filter so author-heavy records stay readable."""
+
+    @pytest.fixture()
+    def runner(self) -> CliRunner:
+        return CliRunner()
+
+    def _invoke(self, runner: CliRunner, home: Path, *args: str):
+        return runner.invoke(cli, ["--home", str(home), *args])
+
+    def test_show_resolves_home_relative_path_from_elsewhere(
+        self, runner: CliRunner, home: Path, indexer: Indexer, repo: Repository,
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ):
+        doc_id = _index_md(indexer, repo, "papers/deep/a.md")
+        indexer.set_metadata_key(doc_id, "status", "read")
+        monkeypatch.chdir(tmp_path)  # cwd is now outside the database home
+
+        result = self._invoke(runner, home, "meta", "show", "papers/deep/a.md")
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["status"] == "read"
+
+    def test_show_absolute_path_still_works(
+        self, runner: CliRunner, home: Path, indexer: Indexer, repo: Repository
+    ):
+        doc_id = _index_md(indexer, repo, "papers/abs.md")
+        indexer.set_metadata_key(doc_id, "status", "x")
+
+        result = self._invoke(runner, home, "meta", "show", str(home / "papers" / "abs.md"))
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["status"] == "x"
+
+    def test_show_unknown_path_errors_loudly(self, runner: CliRunner, home: Path):
+        """A mistyped or wrongly-rooted path must not look like 'no metadata'."""
+        result = self._invoke(runner, home, "meta", "show", "nope/missing.md")
+
+        assert result.exit_code != 0
+        assert "neither an indexed document" in result.output
+
+    def test_show_key_filter_prints_string_bare(
+        self, runner: CliRunner, home: Path, indexer: Indexer, repo: Repository
+    ):
+        doc_id = _index_md(indexer, repo, "papers/k1.md")
+        indexer.set_metadata_key(doc_id, "arxiv_id", "1706.03762")
+
+        result = self._invoke(runner, home, "meta", "show", str(home / "papers" / "k1.md"), "-k", "arxiv_id")
+
+        assert result.exit_code == 0, result.output
+        assert result.output.strip() == "1706.03762"
+
+    def test_show_key_filter_prints_structured_as_json(
+        self, runner: CliRunner, home: Path, indexer: Indexer, repo: Repository
+    ):
+        doc_id = _index_md(indexer, repo, "papers/k2.md")
+        indexer.set_metadata_key(doc_id, "tags", ["ml", "rl"])
+
+        result = self._invoke(runner, home, "meta", "show", str(home / "papers" / "k2.md"), "-k", "tags")
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output) == ["ml", "rl"]
+
+    def test_show_missing_key_lists_available(
+        self, runner: CliRunner, home: Path, indexer: Indexer, repo: Repository
+    ):
+        doc_id = _index_md(indexer, repo, "papers/k3.md")
+        indexer.set_metadata_key(doc_id, "status", "read")
+
+        result = self._invoke(runner, home, "meta", "show", str(home / "papers" / "k3.md"), "-k", "absent")
+
+        assert result.exit_code != 0
+        assert "status" in result.output  # the available keys are named
+
+    def test_init_does_not_clobber_existing_sidecar(
+        self, runner: CliRunner, home: Path, indexer: Indexer, repo: Repository
+    ):
+        doc_id = _index_md(indexer, repo, "papers/i.md")
+        indexer.set_metadata_key(doc_id, "keep", "me")
+        sidecar = indexer.metadata_sidecar_path(repo.get_by_id(doc_id))
+
+        result = self._invoke(runner, home, "meta", "init", str(home / "papers" / "i.md"))
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(sidecar.read_text()) == {"keep": "me"}
+
+    def test_init_missing_file_errors(self, runner: CliRunner, home: Path):
+        result = self._invoke(runner, home, "meta", "init", str(home / "ghost.md"))
+
+        assert result.exit_code != 0
+
+
 class TestCliMetaValueQuoting:
     """`-v` keeps the JSON-first convention; quoting is how you force a string."""
 

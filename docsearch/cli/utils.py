@@ -101,3 +101,45 @@ def resolve_user_path_to_home_relative(
             raise click.ClickException(f"'{user_path}' does not exist.")
 
     return str(rel)
+
+
+def document_path_candidates(config: Config, user_path: str) -> list[Path]:
+    """Absolute paths a user-supplied document path could mean, best guess first.
+
+    Relative input is resolved against the current working directory first —
+    the shell's own reading, which keeps ``cd home/sub && docsearch meta show
+    file.pdf`` natural — and then against the database home, so a path typed
+    from anywhere else on the filesystem still finds its document instead of
+    silently matching nothing.  Absolute input yields one candidate.
+
+    Callers decide what to do when no candidate matches; reporting the tried
+    paths is what makes a mistyped or wrongly-rooted path obvious, so keep them
+    in the returned list rather than filtering ahead of time.
+    """
+    p = Path(user_path)
+    if p.is_absolute():
+        return [p.resolve()]
+
+    candidates = [(Path.cwd() / p).resolve(), (config.home.resolve() / p).resolve()]
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for cand in candidates:
+        if cand not in seen:
+            seen.add(cand)
+            unique.append(cand)
+    return unique
+
+
+def relative_to_home(config: Config, abs_path: Path) -> str | None:
+    """Path of ``abs_path`` relative to the database home, or None if outside it."""
+    try:
+        return str(abs_path.resolve().relative_to(config.home.resolve()))
+    except ValueError:
+        return None
+
+
+def describe_candidates(user_path: str, candidates: list[Path]) -> str:
+    """One-line account of where a path was looked for, for error messages."""
+    if len(candidates) == 1:
+        return f"'{user_path}' → {candidates[0]}"
+    return f"'{user_path}' → " + ", ".join(str(c) for c in candidates)

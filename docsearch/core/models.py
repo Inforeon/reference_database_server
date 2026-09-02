@@ -7,6 +7,24 @@ from datetime import datetime
 from typing import Any, Optional
 
 
+def _json_object_or_empty(raw: Any) -> dict[str, Any]:
+    """Parse a metadata column into a dict, degrading to ``{}`` on damage.
+
+    These columns are always JSON objects by construction, so anything else —
+    malformed text from an interrupted write, or a scalar that slipped in — is
+    not data worth keeping.  Raising here would turn one corrupt row into a crash
+    for every search that happens to return it; :func:`sidecars.load_sidecar`
+    already treats unparseable metadata as empty, and the read path must agree.
+    """
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 @dataclass
 class Document:
     """A single indexed document."""
@@ -54,8 +72,8 @@ class Document:
                 size=row["size"] if "size" in keys and row["size"] else 0,
                 mtime=row["mtime"] if "mtime" in keys and row["mtime"] else 0.0,
                 content_hash=row["content_hash"] if "content_hash" in keys and row["content_hash"] else "",
-                extracted_metadata=json.loads(extracted_raw) if extracted_raw else {},
-                sidecar_metadata=json.loads(sidecar_raw) if sidecar_raw else {},
+                extracted_metadata=_json_object_or_empty(extracted_raw),
+                sidecar_metadata=_json_object_or_empty(sidecar_raw),
                 full_text=row["full_text"] if "full_text" in keys and row["full_text"] else "",
                 indexed_at=datetime.fromisoformat(indexed_raw) if indexed_raw else None,
             )
@@ -72,8 +90,8 @@ class Document:
             size=row[7] if len(row) > 7 and row[7] else 0,
             mtime=row[8] if len(row) > 8 and row[8] else 0.0,
             content_hash=row[9] if len(row) > 9 and row[9] else "",
-            extracted_metadata=json.loads(row[10]) if len(row) > 10 and row[10] else {},
-            sidecar_metadata=json.loads(row[11]) if len(row) > 11 and row[11] else {},
+            extracted_metadata=_json_object_or_empty(row[10]) if len(row) > 10 else {},
+            sidecar_metadata=_json_object_or_empty(row[11]) if len(row) > 11 else {},
             full_text=row[12] if len(row) > 12 and row[12] else "",
             indexed_at=datetime.fromisoformat(row[13]) if len(row) > 13 and row[13] else None,
         )
@@ -120,7 +138,7 @@ class Chapter:
                 end_page=row["end_page"] if "end_page" in keys and row["end_page"] is not None else None,
                 page_count=row["page_count"] if "page_count" in keys and row["page_count"] else None,
                 file_path=row["file_path"] if "file_path" in keys and row["file_path"] else None,
-                metadata=json.loads(meta_raw) if meta_raw else {},
+                metadata=_json_object_or_empty(meta_raw),
                 full_text=row["full_text"] if "full_text" in keys and row["full_text"] else "",
             )
 
@@ -135,7 +153,7 @@ class Chapter:
             end_page=row[6] if len(row) > 6 and row[6] is not None else None,
             page_count=row[7] if len(row) > 7 and row[7] else None,
             file_path=row[8] if len(row) > 8 and row[8] else None,
-            metadata=json.loads(row[9]) if len(row) > 9 and row[9] else {},
+            metadata=_json_object_or_empty(row[9]) if len(row) > 9 else {},
             full_text=row[10] if len(row) > 10 and row[10] else "",
         )
 
@@ -177,6 +195,7 @@ class SearchQuery:
     after: str = ""              # ISO date string, filter mtime >=
     before: str = ""             # ISO date string, filter mtime <=
     document_types: list[str] = field(default_factory=list)  # Empty = all types
+    raw_fts: bool = False        # Pass ``q`` to FTS5 verbatim instead of as plain text
     offset: int = 0
     limit: int = 50
 
