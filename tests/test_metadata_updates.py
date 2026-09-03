@@ -477,3 +477,194 @@ class TestPapersAddMetaAbort:
         repo = Repository(str(tmp_path / "docsearch.db"))
         assert repo.count() == 0
         repo.close()
+
+
+class TestParseBreakpoints:
+    """Tests for parse_breakpoints() — converts JSON to chapters list."""
+
+    def test_list_breakpoints(self):
+        from docsearch.cli.utils import parse_breakpoints
+
+        result = parse_breakpoints("[5, 10]")
+        assert result == [
+            {"title": "Chapter 1", "start_page": 0, "end_page": 5},
+            {"title": "Chapter 2", "start_page": 5, "end_page": 10},
+            {"title": "Chapter 3", "start_page": 10, "end_page": None},
+        ]
+
+    def test_single_breakpoint(self):
+        from docsearch.cli.utils import parse_breakpoints
+
+        result = parse_breakpoints("[3]")
+        assert len(result) == 2
+        assert result[0] == {"title": "Chapter 1", "start_page": 0, "end_page": 3}
+        assert result[1]["end_page"] is None  # extends to end of book
+
+    def test_dict_breakpoints(self):
+        from docsearch.cli.utils import parse_breakpoints
+
+        result = parse_breakpoints('{"Intro": 5, "Methods": null}')
+        assert len(result) == 2
+        # Sorted by end_page (null last)
+        assert result[0]["title"] == "Intro"
+        assert result[0] == {"title": "Intro", "start_page": 0, "end_page": 5}
+        assert result[1]["title"] == "Methods"
+        assert result[1] == {"title": "Methods", "start_page": 5, "end_page": None}
+
+    def test_dict_breakpoints_sorted_by_value(self):
+        """Dict entries are sorted by end_page value, not insertion order."""
+        from docsearch.cli.utils import parse_breakpoints
+
+        result = parse_breakpoints('{"Methods": 10, "Intro": 5}')
+        assert result[0]["title"] == "Intro"
+        assert result[1]["title"] == "Methods"
+
+    def test_invalid_json_raises(self):
+        from docsearch.cli.utils import parse_breakpoints
+        import click
+
+        with pytest.raises(click.ClickException, match="valid JSON"):
+            parse_breakpoints("not-json")
+
+    def test_scalar_raises(self):
+        from docsearch.cli.utils import parse_breakpoints
+        import click
+
+        with pytest.raises(click.ClickException, match="JSON list or dict"):
+            parse_breakpoints('"just-a-string"')
+
+    def test_number_raises(self):
+        from docsearch.cli.utils import parse_breakpoints
+        import click
+
+        with pytest.raises(click.ClickException, match="JSON list or dict"):
+            parse_breakpoints("42")
+
+
+class TestTextbookBreakpoints:
+    """CLI integration: textbooks add/upload with --breakpoints."""
+
+    def _make_textbook_pdf(self, path, pages=20):
+        """Create a multi-page PDF for textbook testing."""
+        import fitz
+        doc = fitz.open()
+        for i in range(pages):
+            page = doc.new_page()
+            page.insert_text((72, 72), f"Page {i}")
+        doc.save(str(path))
+        doc.close()
+
+    def test_add_with_list_breakpoints(self, tmp_path):
+        import click.testing
+
+        from docsearch.cli.main import cli
+        from docsearch.core.repository import Repository
+
+        pdf_path = tmp_path / "textbook.pdf"
+        self._make_textbook_pdf(pdf_path)
+
+        runner = click.testing.CliRunner()
+        with runner.isolated_filesystem(temp_dir=str(tmp_path)):
+            result = runner.invoke(
+                cli,
+                ["--home", str(tmp_path), "textbooks", "add", str(pdf_path), "-b", "[5, 10]"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Indexed:" in result.output
+
+        repo = Repository(str(tmp_path / "docsearch.db"))
+        doc = repo.get("textbook.pdf")
+        assert doc is not None
+        chapters = repo.get_chapters(doc.id)
+        assert len(chapters) == 3
+        assert chapters[0].title == "Chapter 1"
+        assert chapters[0].start_page == 0
+        assert chapters[0].end_page == 5
+        assert chapters[2].end_page == 20  # _detect_chapters fills None with page count
+        repo.close()
+
+    def test_add_with_dict_breakpoints(self, tmp_path):
+        import click.testing
+
+        from docsearch.cli.main import cli
+        from docsearch.core.repository import Repository
+
+        pdf_path = tmp_path / "textbook.pdf"
+        self._make_textbook_pdf(pdf_path)
+
+        runner = click.testing.CliRunner()
+        with runner.isolated_filesystem(temp_dir=str(tmp_path)):
+            result = runner.invoke(
+                cli,
+                ["--home", str(tmp_path), "textbooks", "add", str(pdf_path), "-b", '{"Intro":5,"Methods":null}'],
+            )
+
+        assert result.exit_code == 0, result.output
+
+        repo = Repository(str(tmp_path / "docsearch.db"))
+        doc = repo.get("textbook.pdf")
+        assert doc is not None
+        chapters = repo.get_chapters(doc.id)
+        assert len(chapters) == 2
+        assert chapters[0].title == "Intro"
+        assert chapters[1].title == "Methods"
+        repo.close()
+
+    def test_breakpoints_override_meta_chapters(self, tmp_path):
+        """--breakpoints takes precedence over -m chapters with a warning."""
+        import click.testing
+
+        from docsearch.cli.main import cli
+        from docsearch.core.repository import Repository
+
+        pdf_path = tmp_path / "textbook.pdf"
+        self._make_textbook_pdf(pdf_path)
+
+        runner = click.testing.CliRunner()
+        with runner.isolated_filesystem(temp_dir=str(tmp_path)):
+            result = runner.invoke(
+                cli,
+                [
+                    "--home", str(tmp_path), "textbooks", "add", str(pdf_path),
+                    "-b", "[7]",
+                    "-m", 'chapters=[{"title":"FromMeta","start_page":0,"end_page":3}]',
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Warning:" in result.output
+        assert "--breakpoints takes precedence" in result.output
+
+        repo = Repository(str(tmp_path / "docsearch.db"))
+        doc = repo.get("textbook.pdf")
+        assert doc is not None
+        chapters = repo.get_chapters(doc.id)
+        # Should use breakpoints (2 chapters), not meta (1 chapter)
+        assert len(chapters) == 2
+        assert chapters[0].title == "Chapter 1"
+        repo.close()
+
+    def test_invalid_breakpoints_aborts(self, tmp_path):
+        import click.testing
+
+        from docsearch.cli.main import cli
+        from docsearch.core.repository import Repository
+
+        pdf_path = tmp_path / "textbook.pdf"
+        self._make_textbook_pdf(pdf_path)
+
+        runner = click.testing.CliRunner()
+        with runner.isolated_filesystem(temp_dir=str(tmp_path)):
+            result = runner.invoke(
+                cli,
+                ["--home", str(tmp_path), "textbooks", "add", str(pdf_path), "-b", "not-json"],
+            )
+
+        assert result.exit_code != 0
+        assert "valid JSON" in result.output
+
+        # Nothing indexed
+        repo = Repository(str(tmp_path / "docsearch.db"))
+        assert repo.count() == 0
+        repo.close()

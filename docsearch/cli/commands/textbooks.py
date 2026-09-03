@@ -6,7 +6,7 @@ from typing import Any
 
 import click
 
-from docsearch.cli.utils import parse_meta_pairs, resolve_user_path_to_home_relative
+from docsearch.cli.utils import parse_breakpoints, parse_meta_pairs, resolve_user_path_to_home_relative
 from docsearch.core.indexer import Indexer
 from docsearch.core.models import Chapter
 from docsearch.core.repository import Repository
@@ -22,20 +22,34 @@ def textbooks() -> None:
 @textbooks.command()
 @click.argument("filepath")
 @click.option(
+    "-b", "--breakpoints", default=None,
+    help="Chapter breakpoints as JSON. List [5,10,15] for page boundaries "
+         "(auto-named chapters), or dict {\"Intro\":5,\"Methods\":null} for named chapters.",
+)
+@click.option(
     "-m", "--meta", "meta_pairs",
     multiple=True,
     help="Extra metadata as KEY=VALUE (repeatable). Values are parsed as JSON "
          "when possible; quote to keep a string: -m isbn='\"0000000000\"'.",
 )
 @click.pass_obj
-def add(ctx: dict, filepath: str, meta_pairs: tuple[str, ...]) -> None:
+def add(ctx: dict, filepath: str, breakpoints: str | None, meta_pairs: tuple[str, ...]) -> None:
     """Add a textbook to the index."""
     config = ctx["config"]
     rel_filepath = resolve_user_path_to_home_relative(config, filepath, require_exists=True)
     repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
-        extra_meta = parse_meta_pairs(meta_pairs)
+        extra_meta = parse_meta_pairs(meta_pairs) or {}
+
+        if breakpoints is not None:
+            if "chapters" in extra_meta:
+                click.echo(
+                    "Warning: both --breakpoints and -m chapters=... provided; "
+                    "--breakpoints takes precedence, ignoring -m chapters.",
+                    err=True,
+                )
+            extra_meta["chapters"] = parse_breakpoints(breakpoints)
 
         doc = indexer.add_file(rel_filepath, document_type="textbook", extra_metadata=extra_meta or None)
         if doc:
@@ -51,13 +65,18 @@ def add(ctx: dict, filepath: str, meta_pairs: tuple[str, ...]) -> None:
 @click.option("-n", "--name", help="Filename to save as (default: original name).")
 @click.option("-D", "--directory", default="", help="Subdirectory within database home to save into.")
 @click.option(
+    "-b", "--breakpoints", default=None,
+    help="Chapter breakpoints as JSON. List [5,10,15] for page boundaries "
+         "(auto-named chapters), or dict {\"Intro\":5,\"Methods\":null} for named chapters.",
+)
+@click.option(
     "-m", "--meta", "meta_pairs",
     multiple=True,
     help="Extra metadata as KEY=VALUE (repeatable). Values are parsed as JSON "
          "when possible; quote to keep a string: -m isbn='\"0000000000\"'.",
 )
 @click.pass_obj
-def upload(ctx: dict, file, name: str | None, directory: str, meta_pairs: tuple[str, ...]) -> None:
+def upload(ctx: dict, file, name: str | None, directory: str, breakpoints: str | None, meta_pairs: tuple[str, ...]) -> None:
     """Upload a textbook and index it automatically."""
     import shutil
     config = ctx["config"]
@@ -82,7 +101,16 @@ def upload(ctx: dict, file, name: str | None, directory: str, meta_pairs: tuple[
     repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
-        extra_meta = parse_meta_pairs(meta_pairs)
+        extra_meta = parse_meta_pairs(meta_pairs) or {}
+
+        if breakpoints is not None:
+            if "chapters" in extra_meta:
+                click.echo(
+                    "Warning: both --breakpoints and -m chapters=... provided; "
+                    "--breakpoints takes precedence, ignoring -m chapters.",
+                    err=True,
+                )
+            extra_meta["chapters"] = parse_breakpoints(breakpoints)
 
         rel_target = str(target_path.relative_to(config.home))
         doc = indexer.add_file(rel_target, document_type="textbook", extra_metadata=extra_meta or None)

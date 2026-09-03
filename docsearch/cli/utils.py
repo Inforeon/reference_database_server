@@ -43,6 +43,70 @@ def parse_meta_pairs(pairs: tuple[str, ...]) -> dict[str, Any] | None:
     return meta or None
 
 
+def parse_breakpoints(raw: str) -> list[dict[str, Any]]:
+    """Parse chapter breakpoints into the ``chapters`` format for textbook indexing.
+
+    Accepts two JSON formats:
+
+    - **List** ``[5, 10, 15]`` — page boundaries producing N+1 auto-named
+      chapters. The first runs from page 0 to the first breakpoint, and the
+      last extends to end of book (``end_page: null``).
+    - **Dict** ``{"Intro": 5, "Methods": null}`` — title-to-end-page mapping.
+      Entries are sorted by end page (``null`` last); each chapter starts where
+      the previous one ended.
+
+    Returns a list of chapter dicts suitable for passing as ``extra_metadata["chapters"]``.
+    """
+    try:
+        breakpoints = json.loads(raw)
+    except json.JSONDecodeError:
+        raise click.ClickException(
+            f"Breakpoints must be valid JSON (list or dict), got: {raw}"
+        )
+
+    if isinstance(breakpoints, dict):
+        # Dict: {"chp1": 2, "chp2": 5, ..., "last": None}
+        # Values are end pages; sorted by value (None last).
+        sorted_items = sorted(
+            breakpoints.items(),
+            key=lambda x: (x[1] is None, x[1] or 0),
+        )
+        chapters: list[dict[str, Any]] = []
+        prev_end = 0
+        for i, (title, end_page) in enumerate(sorted_items):
+            chapters.append({
+                "title": title,
+                "start_page": prev_end,
+                "end_page": end_page,
+            })
+            if end_page is not None:
+                prev_end = end_page
+        return chapters
+
+    if isinstance(breakpoints, list):
+        # List: [2, 5, 6, 9] — page boundaries implying N+1 chapters.
+        chapters = []
+        prev_end = 0
+        for i, bp in enumerate(breakpoints):
+            chapters.append({
+                "title": f"Chapter {i + 1}",
+                "start_page": prev_end,
+                "end_page": bp,
+            })
+            prev_end = bp
+        # Final chapter from last breakpoint to end of book
+        chapters.append({
+            "title": f"Chapter {len(breakpoints) + 1}",
+            "start_page": prev_end,
+            "end_page": None,
+        })
+        return chapters
+
+    raise click.ClickException(
+        f"Breakpoints must be a JSON list or dict, got {type(breakpoints).__name__}"
+    )
+
+
 def resolve_user_path_to_home_relative(
     config: Config,
     user_path: str,
