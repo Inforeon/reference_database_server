@@ -31,13 +31,13 @@ def parse_meta_pairs(pairs: tuple[str, ...]) -> dict[str, Any] | None:
     """Parse ``-m KEY=VALUE`` pairs into a dict, or ``None`` if there are none.
 
     A key is taken from everything before the first ``=``, so values may
-    contain further ``=`` characters.  Malformed pairs are reported and skipped.
+    contain further ``=`` characters.  Malformed pairs cause an immediate
+    abort — partial silent drop is worse than hard failure.
     """
     meta: dict[str, Any] = {}
     for pair in pairs:
         if "=" not in pair:
-            click.echo(f"Invalid metadata pair: {pair} (expected KEY=VALUE)", err=True)
-            continue
+            raise click.ClickException(f"Invalid metadata pair: {pair} (expected KEY=VALUE)")
         key, value = pair.split("=", 1)
         meta[key] = parse_meta_value(value)
     return meta or None

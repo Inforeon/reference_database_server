@@ -406,3 +406,74 @@ class TestCliMetaValueQuoting:
         from docsearch.cli.utils import parse_meta_value
 
         assert parse_meta_value("1710.04820") == 1710.0482  # trailing zero gone
+
+
+class TestParseMetaPairs:
+    """Tests for parse_meta_pairs() — malformed pairs abort rather than skip."""
+
+    def test_valid_pairs_parse(self):
+        from docsearch.cli.utils import parse_meta_pairs
+
+        result = parse_meta_pairs(("key1=value1", "key2=42"))
+        assert result == {"key1": "value1", "key2": 42}
+
+    def test_empty_pairs_returns_none(self):
+        from docsearch.cli.utils import parse_meta_pairs
+
+        assert parse_meta_pairs(()) is None
+
+    def test_malformed_pair_raises(self):
+        from docsearch.cli.utils import parse_meta_pairs
+        import click
+
+        with pytest.raises(click.ClickException, match="Invalid metadata pair"):
+            parse_meta_pairs(("no_equals_sign",))
+
+    def test_malformed_pair_aborts_before_good_ones(self):
+        """A bad pair in the middle must abort — no partial collection."""
+        from docsearch.cli.utils import parse_meta_pairs
+        import click
+
+        with pytest.raises(click.ClickException, match="Invalid metadata pair"):
+            parse_meta_pairs(("good=1", "bad_pair", "also_good=2"))
+
+    def test_value_with_equals_sign(self):
+        """Value may contain further = characters."""
+        from docsearch.cli.utils import parse_meta_pairs
+
+        result = parse_meta_pairs(("equation=a=b+c",))
+        assert result == {"equation": "a=b+c"}
+
+
+class TestPapersAddMetaAbort:
+    """CLI integration: papers add must abort on malformed -m before indexing."""
+
+    def test_invalid_meta_aborts_without_indexing(self, tmp_path):
+        import fitz
+        import click.testing
+
+        from docsearch.cli.main import cli
+        from docsearch.core.repository import Repository
+
+        # Create a minimal PDF
+        pdf = fitz.open()
+        pdf.new_page()
+        pdf_path = tmp_path / "test.pdf"
+        pdf.save(str(pdf_path))
+        pdf.close()
+
+        runner = click.testing.CliRunner()
+        with runner.isolated_filesystem(temp_dir=str(tmp_path)):
+            result = runner.invoke(
+                cli,
+                ["--home", str(tmp_path), "papers", "add", str(pdf_path), "--skip-bib", "-m", "bad_pair"],
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code != 0
+        assert "Invalid metadata pair" in result.output
+
+        # Verify nothing was indexed
+        repo = Repository(str(tmp_path / "docsearch.db"))
+        assert repo.count() == 0
+        repo.close()
