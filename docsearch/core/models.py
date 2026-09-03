@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 
 def _json_object_or_empty(raw: Any) -> dict[str, Any]:
@@ -21,8 +24,12 @@ def _json_object_or_empty(raw: Any) -> dict[str, Any]:
     try:
         data = json.loads(raw)
     except (json.JSONDecodeError, TypeError):
+        logger.warning("Corrupt JSON metadata column (degraded to {{}}): %r", str(raw)[:80])
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        logger.warning("Metadata column is a JSON scalar rather than object (degraded to {{}}): %r", str(raw)[:80])
+        return {}
+    return data
 
 
 @dataclass

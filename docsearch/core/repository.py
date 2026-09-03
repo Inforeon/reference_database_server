@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
@@ -8,6 +9,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
 from .models import Chapter, Document, SearchQuery, SearchResult, TextRow
+
+logger = logging.getLogger(__name__)
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS documents (
@@ -489,8 +492,10 @@ class Repository:
             try:
                 data = json.loads(row["sidecar_metadata"] or "{}")
             except json.JSONDecodeError:
+                logger.warning("Corrupt sidecar_metadata for document id=%d (degraded to {{}})", doc_id)
                 data = {}
             if not isinstance(data, dict):
+                logger.warning("sidecar_metadata for document id=%d is a JSON scalar (degraded to {{}})", doc_id)
                 data = {}
 
             if patch:
