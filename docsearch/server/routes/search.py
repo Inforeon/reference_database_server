@@ -9,16 +9,25 @@ from docsearch.server.schemas import (
     ChapterResponse,
     ChapterSearchGroup,
     ChapterSearchResultResponse,
+    CompactChapterHit,
+    CompactChapterSearchGroup,
+    CompactDocumentHit,
+    CompactDocumentSearchGroup,
+    CompactSearchResponse,
     DocumentResponse,
     DocumentSearchGroup,
     SearchResponse,
     SearchResultResponse,
+    _extract_title,
+    _extract_year,
+    _format_author_slim,
+    _format_pages,
 )
 
 router = APIRouter(prefix="/api/search", tags=["search"])
 
 
-@router.get("", response_model=SearchResponse)
+@router.get("", response_model=SearchResponse | CompactSearchResponse)
 async def search(
     q: str = Query("", description="Full-text search query"),
     scope: str = Query("", description="Restrict to subdirectory prefix"),
@@ -31,8 +40,9 @@ async def search(
     raw_fts: bool = Query(False, description="Pass q to FTS5 verbatim instead of as plain text"),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
+    verbose: bool = Query(False, description="Include full metadata in results (default: compact)"),
     config = Depends(get_config),
-) -> SearchResponse:
+) -> SearchResponse | CompactSearchResponse:
     """Search indexed documents and textbook chapters.
 
     Returns separated result groups: ``documents`` for generic/paper/textbook
@@ -41,6 +51,9 @@ async def search(
     ``q`` is plain text by default — FTS5 operator characters (``-``, ``(``,
     ``:``, ``*``) are searched for rather than parsed; set ``raw_fts`` to opt
     into FTS5's own query syntax.
+
+    By default, returns compact results with slim metadata. Set ``verbose=true``
+    for full document metadata (current behaviour).
     """
     tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
     type_list = [t.strip() for t in document_types.split(",") if t.strip()] if document_types else []
@@ -63,6 +76,7 @@ async def search(
     try:
         # ── Phase 1: Non-textbook documents (generic, paper) ──────
         doc_results: list[SearchResultResponse] = []
+        compact_doc_results: list[CompactDocumentHit] = []
         non_textbook_types = ["generic", "paper"]
         if any(sq.includes_type(t) for t in non_textbook_types):
             filtered_sq = SearchQuery(**sq.__dict__)
@@ -70,7 +84,9 @@ async def search(
                 t for t in non_textbook_types if sq.includes_type(t)
             ] or non_textbook_types
             raw_docs = repo.search(filtered_sq)
-            doc_results = [_to_search_response(r) for r in raw_docs]
+            for r in raw_docs:
+                doc_results.append(_to_search_response(r))
+                compact_doc_results.append(_to_compact_hit(r))
 
         # ── Phase 2: Textbook documents (title/metadata level) ──────
         if sq.includes_type("textbook"):
@@ -79,9 +95,11 @@ async def search(
             raw_tb_docs = repo.search(tb_sq)
             for r in raw_tb_docs:
                 doc_results.append(_to_search_response(r))
+                compact_doc_results.append(_to_compact_hit(r))
 
         # ── Phase 3: Textbook chapters (full_text + title level) ────
         chap_results: list[ChapterSearchResultResponse] = []
+        compact_chap_results: list[CompactChapterHit] = []
         if sq.includes_type("textbook"):
             raw_chaps = repo.search_textbook_chapters(sq)
             for r in raw_chaps:
@@ -117,10 +135,25 @@ async def search(
                         score=r.score,
                     )
                 )
+                compact_chap_results.append(
+                    CompactChapterHit(
+                        chapter_id=r.chapter.id,
+                        textbook_id=r.chapter.textbook_id,
+                        chapter_index=r.chapter.chapter_index,
+                        title=r.chapter.title,
+                        pages=_format_pages(r.chapter.start_page, r.chapter.end_page),
+                        score=r.score,
+                    )
+                )
 
-        return SearchResponse(
-            documents=DocumentSearchGroup(results=doc_results, total=len(doc_results)),
-            chapters=ChapterSearchGroup(results=chap_results, total=len(chap_results)),
+        if verbose:
+            return SearchResponse(
+                documents=DocumentSearchGroup(results=doc_results, total=len(doc_results)),
+                chapters=ChapterSearchGroup(results=chap_results, total=len(chap_results)),
+            )
+        return CompactSearchResponse(
+            documents=CompactDocumentSearchGroup(results=compact_doc_results, total=len(compact_doc_results)),
+            chapters=CompactChapterSearchGroup(results=compact_chap_results, total=len(compact_chap_results)),
         )
     finally:
         repo.close()
@@ -144,4 +177,18 @@ def _to_search_response(r) -> SearchResultResponse:
         ),
         score=r.score,
         snippet=r.snippet,
+    )
+
+
+def _to_compact_hit(r) -> CompactDocumentHit:
+    d = r.document
+    meta = d.combined_metadata
+    return CompactDocumentHit(
+        id=d.id,
+        path=d.path,
+        document_type=d.document_type,
+        title=_extract_title(meta),
+        author=_format_author_slim(meta),
+        year=_extract_year(meta),
+        score=r.score,
     )

@@ -4,7 +4,7 @@ import json
 import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 
 from docsearch.core.handlers import _generate_bibtex_from_metadata
@@ -15,11 +15,15 @@ from docsearch.server.dependencies import get_config
 from docsearch.server.schemas import (
     AddGenericReferenceRequest,
     ContentResponse,
+    CompactDocumentResponse,
     DocumentResponse,
     MetaPatch,
     MoveDocumentRequest,
     MoveDocumentResponse,
     UploadResponse,
+    _extract_title,
+    _extract_year,
+    _format_author_slim,
 )
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
@@ -147,29 +151,42 @@ async def upload_file(
         repo.close()
 
 
-@router.get("/{doc_id}", response_model=DocumentResponse)
+@router.get("/{doc_id}", response_model=DocumentResponse | CompactDocumentResponse)
 async def get_document(
     doc_id: int,
+    verbose: bool = Query(False, description="Include full metadata (default: compact)"),
     config = Depends(get_config),
-) -> DocumentResponse:
-    """Get a document by its internal ID."""
+) -> DocumentResponse | CompactDocumentResponse:
+    """Get a document by its internal ID.
+
+    By default, returns compact metadata with slim author string and year.
+    Set ``verbose=true`` for full combined metadata.
+    """
     repo = Repository(str(config.db_path), config.home)
     try:
         doc = repo.get_by_id(doc_id)
         if not doc:
             raise HTTPException(status_code=404, detail="Document not found")
-        return DocumentResponse(
+
+        if verbose:
+            return _doc_to_response(doc)
+
+        # Compact response
+        meta = doc.combined_metadata
+        chapter_count = None
+        if doc.document_type == "textbook":
+            chapters = repo.get_chapters(doc.id)
+            chapter_count = len(chapters) if chapters else 0
+
+        return CompactDocumentResponse(
             id=doc.id,
             path=doc.path,
-            filename=doc.filename,
-            directory=doc.directory,
-            extension=doc.extension,
             document_type=doc.document_type,
             source_type=doc.source_type,
-            size=doc.size,
-            mtime=doc.mtime,
-            metadata=doc.combined_metadata,
-            indexed_at=doc.indexed_at,
+            title=_extract_title(meta),
+            author=_format_author_slim(meta),
+            year=_extract_year(meta),
+            chapter_count=chapter_count,
         )
     finally:
         repo.close()

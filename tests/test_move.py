@@ -302,6 +302,6 @@ class TestMoveDocumentAPI:
         assert resp.json()["id"] == original_id
 
         # Verify we can still fetch by the same id
-        resp2 = api_client.get(f"/api/documents/{original_id}")
+        resp2 = api_client.get(f"/api/documents/{original_id}", params={"verbose": "true"})
         assert resp2.status_code == 200
         assert resp2.json()["filename"] == "new_place.txt"

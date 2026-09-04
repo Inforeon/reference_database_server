@@ -569,7 +569,7 @@ class TestChapterEndpoints:
         """Search should find textbook chapters by full-text content."""
         self._index_textbook_with_chapters(client, db_home)
 
-        resp = client.get("/api/search?q=chapter+section")
+        resp = client.get("/api/search?q=chapter+section&verbose=true")
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["chapters"]["results"]) >= 1
@@ -1141,7 +1141,7 @@ class TestPaperReferenceEndpoints:
             json={"filepath": str(md_path), "document_type": "generic"},
         )
 
-        resp = client.get("/api/search?q=Transformer")
+        resp = client.get("/api/search?q=Transformer&verbose=true")
         assert resp.status_code == 200
         data = resp.json()
         # Should find the reference in document results
@@ -1218,7 +1218,7 @@ class TestGenericReferenceEndpoints:
             json={"title": "Important Design Decision", "subject": "API architecture"},
         )
 
-        resp = client.get("/api/search?q=Important+Design")
+        resp = client.get("/api/search?q=Important+Design&verbose=true")
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["documents"]["results"]) >= 1
@@ -1288,13 +1288,137 @@ class TestTextbookReferenceEndpoints:
             json={"title": "Neural Networks and Deep Learning", "author": "Goodfellow"},
         )
 
-        resp = client.get("/api/search?q=Neural+Networks")
+        resp = client.get("/api/search?q=Neural+Networks&verbose=true")
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["documents"]["results"]) >= 1
         hit = data["documents"]["results"][0]
         assert hit["document"]["source_type"] == "reference"
         assert hit["document"]["document_type"] == "textbook"
+
+
+class TestCompactResponses:
+    """Tests for compact (default) vs verbose search and document responses."""
+
+    def _upload_md(self, client, title="Test Document", author="Alice Author", year="2024"):
+        """Upload a markdown file with known metadata."""
+        content = f"---\ntitle: \"{title}\"\nauthor: \"{author}\"\nyear: {year}\n---\n\nTest content here.\n"
+        resp = client.post(
+            "/api/documents/upload",
+            files={"file": ("test.md", content.encode(), "text/markdown")},
+        )
+        assert resp.status_code == 200
+        return resp.json()["id"]
+
+    def test_search_default_is_compact(self, client, db_home: str):
+        """Default search response should be compact (no nested document object)."""
+        doc_id = self._upload_md(client)
+        resp = client.get("/api/search?q=Test")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["documents"]["results"]) >= 1
+        hit = data["documents"]["results"][0]
+        # Compact format: flat fields, no nested document object
+        assert "document" not in hit
+        assert "id" in hit
+        assert "path" in hit
+        assert "document_type" in hit
+        assert "title" in hit
+        assert "author" in hit
+        assert "year" in hit
+        assert "score" in hit
+        # Should NOT have verbose-only fields
+        assert "size" not in hit
+        assert "mtime" not in hit
+        assert "metadata" not in hit
+
+    def test_search_verbose_returns_full_response(self, client, db_home: str):
+        """Verbose search should return full document object with metadata."""
+        doc_id = self._upload_md(client)
+        resp = client.get("/api/search?q=Test&verbose=true")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["documents"]["results"]) >= 1
+        hit = data["documents"]["results"][0]
+        # Verbose format: nested document object
+        assert "document" in hit
+        assert "score" in hit
+        doc = hit["document"]
+        assert "id" in doc
+        assert "size" in doc
+        assert "mtime" in doc
+        assert "metadata" in doc
+
+    def test_search_compact_has_slim_author(self, client, db_home: str):
+        """Compact search should have slim author string."""
+        self._upload_md(client, author="Alice Author")
+        resp = client.get("/api/search?q=Test")
+        data = resp.json()
+        hit = data["documents"]["results"][0]
+        assert hit["author"] == "Alice Author"
+
+    def test_search_compact_chapters_are_slim(self, client, db_home: str):
+        """Compact chapter results should be flat without parent_document."""
+        # Create a simple textbook PDF in memory and upload
+        import fitz
+        pdf = fitz.open()
+        for i in range(5):
+            page = pdf.new_page()
+            page.insert_text((72, 72), f"Chapter content {i}")
+        import io
+        pdf_bytes = pdf.tobytes()
+        pdf.close()
+
+        resp = client.post(
+            "/api/documents/textbooks/upload",
+            files={"file": ("textbook.pdf", pdf_bytes, "application/pdf")},
+        )
+        assert resp.status_code == 200
+
+        resp = client.get("/api/search?q=Chapter")
+        data = resp.json()
+        if data["chapters"]["results"]:
+            hit = data["chapters"]["results"][0]
+            # Compact format: flat fields
+            assert "chapter" not in hit
+            assert "parent_document" not in hit
+            assert "chapter_id" in hit
+            assert "textbook_id" in hit
+            assert "chapter_index" in hit
+            assert "title" in hit
+            assert "pages" in hit
+
+    def test_document_default_is_compact(self, client, db_home: str):
+        """Default document detail should be compact."""
+        doc_id = self._upload_md(client)
+        resp = client.get(f"/api/documents/{doc_id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        # Compact format
+        assert "id" in data
+        assert "path" in data
+        assert "document_type" in data
+        assert "title" in data
+        assert "author" in data
+        # Should NOT have verbose-only fields
+        assert "size" not in data
+        assert "mtime" not in data
+        assert "metadata" not in data
+        assert "filename" not in data
+
+    def test_document_verbose_returns_full(self, client, db_home: str):
+        """Verbose document detail should include all fields."""
+        doc_id = self._upload_md(client)
+        resp = client.get(f"/api/documents/{doc_id}", params={"verbose": "true"})
+        assert resp.status_code == 200
+        data = resp.json()
+        # Verbose format
+        assert "id" in data
+        assert "filename" in data
+        assert "size" in data
+        assert "mtime" in data
+        assert "metadata" in data
+        assert "indexed_at" in data
 
 
 class TestFileSystemEndpoint:
@@ -1967,7 +2091,7 @@ class TestPatchMetaEndpoint:
         assert resp.status_code == 200
         assert resp.json()["metadata"]["tags"] == ["unread-tag"]
 
-        hits = client.get("/api/search", params={"q": "Note", "tags": "unread-tag"}).json()
+        hits = client.get("/api/search", params={"q": "Note", "tags": "unread-tag", "verbose": "true"}).json()
         assert [h["document"]["id"] for h in hits["documents"]["results"]] == [doc_id]
 
         assert json.loads(self._sidecar(db_home, path).read_text())["tags"] == ["unread-tag"]
@@ -2006,11 +2130,11 @@ class TestPatchMetaEndpoint:
 
     def test_patch_does_not_reindex(self, client, db_home: str):
         doc_id = self._upload(client, content=b"# Heading\n\nUnique body marker.")
-        before = client.get(f"/api/documents/{doc_id}").json()
+        before = client.get(f"/api/documents/{doc_id}", params={"verbose": "true"}).json()
 
         client.patch(f"/api/documents/{doc_id}/meta", json={"key": "tag", "value": "x"})
 
-        after = client.get(f"/api/documents/{doc_id}").json()
+        after = client.get(f"/api/documents/{doc_id}", params={"verbose": "true"}).json()
         assert after["indexed_at"] == before["indexed_at"]
         assert "Unique body marker" in client.get(f"/api/documents/{doc_id}/content").json()["content"]
 

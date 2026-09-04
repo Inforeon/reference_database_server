@@ -157,7 +157,122 @@ class MetaPatch(BaseModel):
     value: Any
 
 
-# ── Chapter schemas ────────────────────────────────────────────────
+# ── Metadata slimming helpers ────────────────────────────────────────
+
+def _format_author_slim(metadata: dict[str, Any]) -> str | None:
+    """Extract a slim author string from metadata.
+
+    Returns first author + "et al." if >3 authors, or full string if short.
+    Handles plain strings, lists, and pdf2bib authors_bib dicts.
+    """
+    for key in ("author", "authors", "authors_bib"):
+        value = metadata.get(key)
+        if not value:
+            continue
+        if isinstance(value, str):
+            return value.strip() or None
+        if isinstance(value, list):
+            names = [
+                _author_dict_name(v) if isinstance(v, dict) else str(v).strip()
+                for v in value
+                if v and str(v).strip()
+            ]
+            if not names:
+                continue
+            if len(names) > 3:
+                return f"{names[0]} et al."
+            return ", ".join(names[:3]) or None
+    return None
+
+
+def _author_dict_name(d: dict) -> str:
+    """Format a single pdf2bib author dict as 'Given Family'."""
+    given = d.get("given", "")
+    family = d.get("family", "")
+    return f"{given} {family}".strip() or str(d)
+
+
+def _extract_year(metadata: dict[str, Any]) -> int | str | None:
+    """Extract year from metadata, normalizing to int if possible."""
+    year = metadata.get("year")
+    if year is None:
+        return None
+    if isinstance(year, (int, float)):
+        return int(year)
+    try:
+        return int(str(year))
+    except (ValueError, TypeError):
+        return str(year)
+
+
+def _extract_title(metadata: dict[str, Any]) -> str | None:
+    """Extract title from metadata."""
+    title = metadata.get("title", "")
+    return title.strip() if title else None
+
+
+# ── Compact response schemas (default, less verbose) ───────────────
+
+class CompactDocumentHit(BaseModel):
+    """Slim document hit for search results (compact mode)."""
+    id: int
+    path: str
+    document_type: str = "generic"
+    title: str | None = None
+    author: str | None = None
+    year: int | str | None = None
+    score: float = 0.0
+
+
+class CompactChapterHit(BaseModel):
+    """Slim chapter hit for search results (compact mode)."""
+    chapter_id: int
+    textbook_id: int
+    chapter_index: int
+    title: str
+    pages: str  # "112–120" format
+    score: float = 0.0
+
+
+class CompactDocumentSearchGroup(BaseModel):
+    """Paginated group of compact document-level search results."""
+    results: list[CompactDocumentHit]
+    total: int
+
+
+class CompactChapterSearchGroup(BaseModel):
+    """Paginated group of compact chapter-level search results."""
+    results: list[CompactChapterHit]
+    total: int
+
+
+class CompactSearchResponse(BaseModel):
+    """Combined compact search response with separated result groups."""
+    documents: CompactDocumentSearchGroup
+    chapters: CompactChapterSearchGroup
+
+
+class CompactDocumentResponse(BaseModel):
+    """Slim document detail (compact mode)."""
+    id: int
+    path: str
+    document_type: str = "generic"
+    source_type: str | None = None
+    title: str | None = None
+    author: str | None = None
+    year: int | str | None = None
+    chapter_count: int | None = None  # Only for textbooks
+
+
+def _format_pages(start: int | None, end: int | None) -> str:
+    """Format page range as 'start–end' string."""
+    if start is not None and end is not None:
+        return f"{start}–{end}"
+    if start is not None:
+        return f"{start}+"
+    if end is not None:
+        return f"–{end}"
+    return ""
 
 class ChapterResponse(BaseModel):
     """Metadata for a single textbook chapter (no full_text)."""
