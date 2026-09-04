@@ -1,15 +1,15 @@
 # docsearch
 
-Document metadata index and search engine for managing reference material (research papers, textbooks, etc.) as model context. Extracts text content from PDFs, DOCX files, and Markdown, stores metadata in SQLite with FTS5 full-text search, and provides both a CLI and a REST API.
+Document metadata index and search engine for managing reference material (research papers, textbooks, etc.) as model context. Extracts text from PDFs, DOCX files, and Markdown; stores metadata in SQLite with FTS5 full-text search; provides CLI and REST API.
 
 ## Features
 
 - **Multi-format extraction** — PDF (PyMuPDF), DOCX (python-docx), Markdown/Text (PyYAML frontmatter)
-- **Full-text search** — SQLite FTS5 with filters on scope, file type, author, tags, date range, and document type
-- **Document types** — First-class support for generic documents, research papers (with BibTeX generation via pdf2bib), textbooks (with chapter-level indexing), and references (metadata-only entries without associated files)
-- **Sidecar metadata** — Editable `<file>.meta.json` files for tagging and annotation without modifying source files
-- **Two interfaces** — Click-based CLI for local workflows, FastAPI REST API for remote access
-- **Content change detection** — SHA-256 hashing avoids unnecessary re-indexing
+- **Full-text search** — FTS5 with filters on scope, file type, author, tags, date range, document type
+- **Document types** — generic, paper (with BibTeX via pdf2bib), textbook (chapter-level indexing), reference (metadata-only)
+- **Sidecar metadata** — Editable `<file>.meta.json` for tagging without modifying source files
+- **Document sections** — Define named line ranges in sidecar metadata; retrieve partial content to reduce context bloat
+- **Two interfaces** — Click CLI for local workflows, FastAPI REST API for remote access
 
 ## Installation
 
@@ -17,11 +17,7 @@ Document metadata index and search engine for managing reference material (resea
 pip install -e .
 ```
 
-For development:
-
-```bash
-pip install -e ".[dev]"
-```
+For development: `pip install -e ".[dev]"`
 
 ## Quick Start
 
@@ -29,16 +25,14 @@ pip install -e ".[dev]"
 
 ```bash
 # Scan a directory of papers
-docsearch index scan ./papers -t paper
+docsearch index scan ./papers -T paper
 
-# Search across all indexed documents
+# Search indexed documents
 docsearch search -q "transformer attention"
 
-# Add a single paper with DOI embedding
-docsearch papers add ./new_paper.pdf --doi 10.1234/example
-
-# Export BibTeX
-docsearch bibtex 42
+# Retrieve full content or specific sections
+docsearch get 42
+docsearch get 42 --sections 0,2
 
 # Tag a document via sidecar metadata
 docsearch meta set ./papers/survey.pdf -k tag -v nlp
@@ -47,17 +41,14 @@ docsearch meta set ./papers/survey.pdf -k tag -v nlp
 ### REST API
 
 ```bash
-# Start the server (defaults to 0.0.0.0:8000)
+# Start server (defaults to 0.0.0.0:8000)
 docsearch-server
-
-# Or programmatically
-uvicorn docsearch.server.app:app --host 0.0.0.0 --port 8000
 ```
 
-Set `DOCSEARCH_HOME` to control the database home directory (default: current working directory).
-Set `DOCSEARCH_DB_PATH` to place the SQLite database file anywhere (default: `{home}/docsearch.db`).
+Set `DOCSEARCH_HOME` to control the database home directory (default: cwd).
+Set `DOCSEARCH_DB_PATH` to place the SQLite database independently (default: `{home}/docsearch.db`).
 
-Interactive API docs available at `http://localhost:8000/docs`.
+Interactive API docs at `http://localhost:8000/docs`.
 
 ## Configuration
 
@@ -67,68 +58,44 @@ Interactive API docs available at `http://localhost:8000/docs`.
 | API home | Current working directory | `DOCSEARCH_HOME` env var |
 | Database path | `{home}/docsearch.db` | `DOCSEARCH_DB_PATH` env var |
 
-All document paths are stored **relative** to the database home, making the index portable across machines. The database file itself can live independently (e.g. on local disk when home is a network mount).
+All document paths are stored **relative** to the database home, making the index portable. The database file can live independently (useful when home is a network mount).
 
 ### CLI Path Resolution
 
-CLI commands resolve user-supplied relative paths against the current working directory first, then validate that the result is within the database home. This means you can work naturally from subdirectories:
+CLI commands resolve relative paths against cwd first, then validate containment within database home. This allows natural usage from subdirectories:
 
 ```bash
 cd ~/docs/home/proj_1
 docsearch papers add paper.pdf    # indexes as proj_1/paper.pdf
-docsearch index move paper.pdf ../proj_2  # moves into proj_2, keeping name
 ```
-
-Absolute paths are also accepted but must reside within the database home. Paths outside the home produce a clear error message.
 
 ## Document Types
 
 | Type | Description |
 |---|---|
 | `generic` | Standard extract-and-index (default) |
-| `paper` | Research papers with pdf2bib bibliographic extraction, DOI embedding, title validation, and BibTeX export |
-| `textbook` | Textbooks split into chapters via TOC detection, each chapter indexed independently |
-| `reference` | Metadata-only paper entries without an associated file (BibTeX auto-generated) |
+| `paper` | Research papers with pdf2bib, DOI embedding, title validation, BibTeX export |
+| `textbook` | PDFs split into chapters via TOC detection, each indexed independently |
+| `reference` | Metadata-only entries without associated files (BibTeX auto-generated) |
 
 ## Source Types
 
-Documents have a `source_type` indicating how they originate:
-
 | Source Type | Applies To | Description |
 |---|---|---|
-| `file` | All types | Document backed by a file on disk (default) |
-| `directory` | Textbooks only | Directory-based textbook with one file per chapter |
+| `file` | All types | Backed by a file on disk (default) |
+| `directory` | Textbooks only | Directory-based textbook, one file per chapter |
 | `reference` | Papers only | Metadata-only entry with no associated file |
 
-## Supported File Formats
-
-| Format | Metadata Source |
-|---|---|
-| PDF | PyMuPDF (title, author, subject, creator, producer, dates, page count) |
-| DOCX | python-docx custom properties (title, author, subject, keywords, comments, dates) |
-| Markdown / Text | PyYAML frontmatter (everything between leading `---` delimiters) |
-
 ## CLI Reference
-
-```
-docsearch [--home PATH] COMMAND
-```
-
-### Commands
-
-| Command | Description |
-|---|---|
-| `info [DOC_ID]` | Show database location and index statistics; with DOC_ID, show full document metadata |
 
 ### Index Management
 
 | Command | Description |
 |---|---|
-| `index scan <DIR>` | Scan directory tree and sync index (`-T/--document-type TYPE`, `--no-recursive`) |
-| `index add <FILE>` | Add a single generic file to the index |
-| `index remove <FILE>` | Remove a file from the index |
-| `index move <SRC> <DST>` | Move an indexed file (DST may be a directory or file path) |
-| `index status <FILE>` | Check if a file needs re-indexing |
+| `index scan <DIR>` | Scan directory tree and sync index (`-T TYPE`, `--no-recursive`) |
+| `index add <FILE>` | Add single file to index |
+| `index remove <FILE>` | Remove file from index |
+| `index move <SRC> <DST>` | Move indexed file (DST may be directory) |
 
 ### Search
 
@@ -138,216 +105,185 @@ docsearch search -q QUERY [OPTIONS]
 
 | Option | Description |
 |---|---|
-| `-q, --query TEXT` | Full-text search query (plain text — see Query semantics) |
-| `--scope DIRECTORY` | Limit to subdirectory |
-| `--type EXTENSION` | Filter by file extension |
-| `--author NAME` | Filter by author (partial names match; see below) |
+| `-q QUERY` | Full-text query (plain text by default, see below) |
+| `--scope DIR` | Limit to subdirectory and subtree |
+| `--type EXT` | Filter by file extension |
+| `--author NAME` | Filter by author (partial match across merged metadata) |
 | `--tag TAG` | Filter by tag (repeatable) |
-| `--after DATE` | Modified after ISO date (YYYY-MM-DD) |
-| `--before DATE` | Modified before ISO date (YYYY-MM-DD) |
-| `--document-types TYPES` | Comma-separated document types (generic, paper, textbook, reference) |
-| `--raw-fts` | Pass `-q` to FTS5 verbatim, enabling its own query syntax |
-| `--limit N` | Max results (default: 50) |
-| `--offset N` | Pagination offset |
-| `-f FORMAT` | Output: `text`, `json`, or `csv` (default: `text`) |
+| `--after/--before DATE` | Date range filter (ISO format) |
+| `--document-types TYPES` | Comma-separated types |
+| `--raw-fts` | Pass query to FTS5 verbatim |
+| `--limit/--offset N` | Pagination |
+| `-f FORMAT` | Output: `text`, `json`, or `csv` |
 
-**Scope semantics:** `--scope` matches the given directory *and everything under it*, including documents stored directly in that directory. Matching is on path components, so `--scope docs` includes `docs/paper.pdf` and `docs/sub/paper.pdf`, but not `docs_extra/paper.pdf`. An empty scope (or `/`) covers the whole index. Chapter results honour the same scope, matched against the parent textbook's directory.
+**Query semantics:** `-q` is plain text by default — FTS5 operator characters (`-`, `(`, `*`, etc.) are searched literally. Trailing `*` still works as prefix. Use `--raw-fts` for FTS5 syntax (`NEAR()`, `OR`, `^boost`).
 
-**Query semantics:** `-q` is treated as plain text. FTS5 has its own query language in which a hyphen reads as a column qualifier and parentheses are syntax, so a raw `actor-critic` would raise `no such column: critic`. Each whitespace-separated term is therefore quoted before it reaches FTS5 (and terms are AND-ed), which makes `-`, `(`, `)`, `:`, `*`, `^`, `NEAR` and bare `OR` ordinary characters to search for rather than operators. A trailing `*` is still honoured as a prefix (`model*` matches "models"). Pass `--raw-fts` to opt out and use FTS5 syntax directly (`NEAR()`, column filters, `OR`, `^boost`).
-
-**Author matching:** `--author` reads the merged metadata — the curated sidecar value where one exists, otherwise the extractor's — across the `author`, `authors` and `authors_bib` fields, so a name added with `meta set` or `--skip-bib -m` is findable. It matches by *containment*, not equality: `Schulman` finds "John Schulman", name order is forgiven (`Schulman John`), and one name within a nineteen-author list matches. A document whose sidecar disagrees with the PDF's embedded author wins.
+**Author matching:** Reads merged metadata (sidecar over extracted) across `author`/`authors`/`authors_bib`. Matches by containment: `Schulman` finds "John Schulman" and either name in `"A and B"`.
 
 ### Document Retrieval
 
 | Command | Description |
 |---|---|
-| `get <DOC_ID>` | Retrieve extracted text (`-f text\|json`) |
-| `bibtex <DOC_ID>` | Export BibTeX entry (papers only) |
+| `get <DOC_ID>` | Retrieve extracted text (`-f text\|json`, `--sections IDX`, `--lines RANGES`) |
+| `bibtex <DOC_ID>` | Export BibTeX (papers only) |
 
-### References and Document Operations
+### Document Sections
 
-| Command | Description |
-|---|---|
-| `reference` | Register a metadata-only reference (`-t TITLE`, `-a AUTHOR`, `-s SUBJECT`, `-k KEYWORDS`, `-u URL`, `-p PATH`, `-T TYPE`, `-m KEY=VALUE`) |
-| `document attach <DOC_ID> <FILE>` | Attach a local file to an existing reference entry |
-| `document detach <DOC_ID>` | Detach the physical file from a document, converting to reference |
-
-### Filesystem Browsing
-
-| Command | Description |
-|---|---|
-| `ls [PATH]` | List indexed contents of a directory (`-f text\|json`) |
-
-### Sidecar Metadata
-
-| Command | Description |
-|---|---|
-| `meta show <FILE>` | Display metadata (`-k KEY` for one field; from the index, falling back to the sidecar file) |
-| `meta set <FILE>` | Set a key on an indexed document (`-k KEY -v VALUE`) |
-| `meta delete <FILE>` | Remove a key from an indexed document (`-k KEY`) |
-| `meta init <FILE>` | Create an empty sidecar file (leaves an existing one untouched) |
-
-**Path resolution:** `<FILE>` is resolved against the current directory first, then against the database home — so a home-relative path works from anywhere, and a cwd-relative one works as the shell would expect. A path that matches neither is an error naming what was tried, never silent empty output; `meta show` on a mistyped path used to print "no metadata" and exit 0, which was indistinguishable from a genuinely empty record.
-
-`set` and `delete` update both places a metadata key lives — the `documents.sidecar_metadata` column (what search, tag filters and every read path use) and the `.meta.json` file (what a re-scan reads back) — in one step, without re-extracting the document. Writing only one of them would leave an edit either invisible or lost on the next scan. Reference-only entries are supported even though they have no file on disk; keys you added to `.meta.json` by hand survive when you edit a different key.
-
-**Value parsing (`-v`, and `-m KEY=VALUE` on every add/upload/reference command):** values are parsed as JSON when possible, so `-v 2018` stores the number `2018` and `-v '["ml","flow"]'` stores a list. Identifiers that look like numbers are lossy this way — `1706.03762` becomes the float `1706.0376`, losing the trailing zero — so quote them to keep the exact string:
+Sections let you define named line ranges in sidecar metadata, then retrieve partial content:
 
 ```bash
-docsearch meta set paper.pdf -k arxiv_id -v '"1706.03762"'
+# Define sections
+docsearch meta set-section paper.pdf --name "Abstract" --start 0 --end 49
+docsearch meta set-section paper.pdf --name "Methods" --start 100 --end 299
+
+# List and retrieve
+docsearch meta list-sections paper.pdf
+docsearch get 42 --sections 0,2          # by section index
+docsearch get 42 --lines "0-99,200-299"  # by line ranges
 ```
+
+### Metadata
+
+| Command | Description |
+|---|---|
+| `meta show <FILE>` | Display metadata (`-k KEY` for single field) |
+| `meta set <FILE>` | Set key on indexed document (`-k KEY -v VALUE`) |
+| `meta delete <FILE>` | Remove key from indexed document |
+| `meta init <FILE>` | Create empty sidecar file |
+
+`set` and `delete` update both the DB column and `.meta.json` without re-extracting. Reference entries are supported.
+
+**Value parsing:** `-v` and `-m KEY=VALUE` parse JSON when possible (`-v 2018` stores integer). Quote identifiers that look like numbers: `-v '"1706.03762"'`.
+
+### Papers
+
+| Command | Description |
+|---|---|
+| `papers add <FILE>` | Add paper (`--doi`, `--skip-bib`, `-m KEY=VALUE`) |
+| `papers upload <FILE>` | Upload and auto-index (`-n NAME`, `-D DIR`) |
+| `papers reference` | Register metadata-only reference (`-t TITLE`, `-a AUTHOR`, `-y YEAR`, `-j JOURNAL`, `-d DOI`, `-k CITATION_KEY`) |
+
+Use full DOIs (e.g. `10.48550/arXiv.2506.13131`) — bare arXiv IDs may hang pdf2bib. Title validation corroborates retrieved metadata against the file before storing.
+
+### Textbooks
+
+| Command | Description |
+|---|---|
+| `textbooks add <FILE>` | Add textbook (`-n NAME`, `-D DIR`, `-m KEY=VALUE`) |
+| `textbooks reference` | Register metadata-only textbook reference |
+| `textbooks init <DIR>` | Initialize empty directory-type textbook |
+| `textbooks set-chapters <DOC_ID>` | Redefine chapter breakpoints for file-type textbook (`-b BREAKPOINTS`) |
+| `textbooks attach-chapter <ID> <FILE>` | Associate chapter file with directory textbook (`-i INDEX`) |
+| `textbooks detach-chapter <ID> <INDEX>` | Remove chapter from directory textbook |
+| `textbooks chapters <FILE>` | List indexed chapters |
+| `textbooks chapter <FILE>` | Print chapter text (`-i INDEX`) |
+
+**Chapter breakpoints:** List `[5,10]` for page boundaries (N boundaries → N+1 auto-named chapters), or dict `{"Intro":5,"Methods":10}` for named chapters. First chapter always starts at page 0.
+
+### References and File Operations
+
+| Command | Description |
+|---|---|
+| `reference` | Register metadata-only generic reference |
+| `document attach <ID> <FILE>` | Attach file to reference entry |
+| `document detach <ID>` | Detach file, converting to reference |
 
 ### Index Repair
 
 | Command | Description |
 |---|---|
-| `repair check` | Report what needs repairing, changing nothing (`--check NAME`, `-v`) |
-| `repair apply` | Repair it in place (`--check NAME`, `-v`) |
+| `repair check` | Report corruption without changing anything (`--check NAME`, `-v`) |
+| `repair apply` | Repair in place (`--check NAME`, `-v`) |
 
-| Check | Fixes |
-|---|---|
-| `control-characters` | Strips C0 control characters from stored document and chapter text — PyMuPDF wraps some inline-math glyph runs in U+0000/U+0001 markers, and a single embedded NUL makes SQLite's `length()` report the text as truncated at that point |
-
-Repairs cover only damage docsearch itself wrote into data it owns. Your own metadata keys are never treated as corruption and no check rewrites them. Applying a fix does not re-extract source files, so `content_hash`, `mtime` and `indexed_at` are left alone; running `apply` twice is harmless.
-
-### Papers
-
-| Command | Description |
-|---|---|
-| `papers add <FILE>` | Add research paper (`--doi`, `--skip-bib`, `-m KEY=VALUE`) |
-| `papers upload <FILE>` | Upload and auto-index (`-n NAME`, `-D DIR`, `--doi`, `--skip-bib`, `-m KEY=VALUE`) |
-| `papers reference` | Register metadata-only paper reference (`-t TITLE`, `-a AUTHOR`, `-y YEAR`, `-j JOURNAL`, `-b BOOKTITLE`, `-d DOI`, `-u URL`, `-k CITATION_KEY`, `-p PATH`, `-m KEY=VALUE`) |
-
-**Note on DOI format:** When using `--doi`, provide a full DOI (e.g. `10.48550/arXiv.2506.13131` for arXiv papers). Bare arXiv IDs (e.g. `2506.13131`) may cause pdf2bib to hang indefinitely on network lookup with no timeout or error message. Use `--skip-bib` as a workaround if the DOI format is non-standard or the network call hangs.
-
-**Title validation:** Retrieved bibliographic metadata is corroborated against the file before it is stored — the PDF's own title metadata when present, otherwise page 1 of its text. A lookup that resolved to the wrong record (a plausible-looking entry for a different paper) fails this check and raises rather than being saved silently; on an interactive terminal you are prompted to confirm instead. Titles and venues from DOI registries also have JATS/HTML markup stripped (`M<sup>2</sup>Diffuser` → `M2Diffuser`) before storage, so exports stay clean and correct records are not flagged as mismatches.
-
-### Textbooks
-
-| Command | Description |
-|---|---|
-| `textbooks add <FILE>` | Add textbook (`-m KEY=VALUE`) |
-| `textbooks upload <FILE>` | Upload and auto-index (`-n NAME`, `-D DIR`, `-m KEY=VALUE`) |
-| `textbooks reference` | Register metadata-only textbook reference (`-t TITLE`, `-a AUTHOR`, `-y YEAR`, `--publisher`, `-e EDITION`, `-u URL`, `-D PATH`, `-m KEY=VALUE`) |
-| `textbooks init <DIR>` | Initialize empty directory-type textbook (`-t TITLE`, `-m KEY=VALUE`) |
-| `textbooks attach-chapter <DOC_ID> <FILE>` | Associate local chapter file with directory textbook (`-i INDEX`) |
-| `textbooks chapters <FILE>` | List indexed chapters |
-| `textbooks chapter <FILE>` | Print chapter text (`-i CHAPTER_INDEX`) |
+Check `control-characters` strips C0 controls from stored text (PyMuPDF emits NUL markers around inline math).
 
 ## REST API Reference
 
 All routes prefixed with `/api`.
 
-### Health
+### Health & Search
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/health` | Health check (`{status, home, db}`) |
+| `GET` | `/health` | Health check |
+| `GET` | `/search` | Full-text search (params: `q`, `scope`, `file_type`, `author`, `tags`, `after`, `before`, `document_types`, `raw_fts`) |
 
 ### Index
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST` | `/index/scan` | Scan directory body: `{dirpath, recursive, document_type, extra_metadata}` → `{added, updated, removed, skipped, errors}` |
-| `POST` | `/index/add` | Add file body: `{filepath, document_type, extra_metadata}` → `{id, path, filename, document_type}` |
-| `POST` | `/index/remove` | Remove file body: `{filepath}` → `{removed}` |
-| `POST` | `/index/upload` | Upload + auto-index (multipart file, query: `directory`, `filename`, `document_type`, `extra_metadata`) → `{id, path, filename}` |
-
-### Search
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/search` | Full-text search (query params: `q`, `scope`, `file_type`, `author`, `tags`, `after`, `before`, `document_types`, `raw_fts`, `offset`, `limit`). `q` is plain text by default — FTS5 operator characters are searched, not parsed; set `raw_fts=true` for FTS5 syntax → `{documents: {results, total}, chapters: {results, total}}` |
-
-`scope` behaves as it does in the CLI: the directory itself plus its subtree, matched on path components.
-
-### Filesystem Browsing
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/fs` | List indexed contents of a directory (query param: `path` relative to db home) → `{path, entries, directories}` |
-
-The `entries` array contains file-level documents (`type: "file"`, with `document_id`). The `directories` array contains inferred subdirectories (`type: "directory"`, no `document_id`) **and** directory-type textbooks (`type: "directory"`, **with** `document_id`). Files and directories are returned separately; path traversal outside the database home is rejected with 400.
+| `POST` | `/index/scan` | Scan directory (`{dirpath, recursive?, document_type?, extra_metadata?}`) |
+| `POST` | `/index/add` | Add file (`{filepath, document_type?, extra_metadata?}`) |
+| `POST` | `/index/remove` | Remove file (`{filepath}`) |
+| `POST` | `/index/upload` | Upload + auto-index (multipart, query: `directory`, `filename`) |
 
 ### Documents
 
-All document operations (metadata, content, file download, sidecar, BibTeX, move) apply to any document type — generic, paper, textbook, or reference.
-
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/documents/{id}` | Get document metadata |
-| `GET` | `/documents/{id}/content` | Get extracted text (`{id, path, filename, content}`) |
-| `GET` | `/documents/{id}/file` | Download original file (binary `FileResponse`; 404 for references) |
+| `GET` | `/documents/{id}` | Get metadata |
+| `GET` | `/documents/{id}/content` | Get text (`?lines=RANGES` for line slicing) |
+| `GET` | `/documents/{id}/file` | Download original file (404 for references) |
 | `GET` | `/documents/{id}/meta` | Get sidecar metadata |
-| `PATCH` | `/documents/{id}/meta` | Update sidecar key body: `{key, value}` → `{updated, key, metadata}`. Writes the DB column and `.meta.json` together without re-extracting; works for reference-only entries (404 if no such document) |
-| `GET` | `/documents/{id}/bibtex` | Export BibTeX (papers only, 400 if not paper) |
-| `POST` | `/documents/{id}/move` | Move document body: `{destination}` → `{id, old_path, new_path, filename}` |
-| `POST` | `/documents/{id}/attach` | Attach file to reference-only entry (multipart, query: `directory`, `filename`) → converts source_type to "file, preserves existing metadata via sidecar |
-| `POST` | `/documents/{id}/detach` | Detach file from document → converts source_type to "reference", deletes physical file, clears full_text and extracted_metadata, preserves sidecar |
-| `GET` | `/documents/{id}/chapters` | List textbook chapters (textbooks only, 400 if not textbook) |
-| `GET` | `/documents/{id}/chapters/{index}` | Get chapter by index (textbooks only) → `{id, textbook_id, chapter_index, title, start_page, end_page, metadata, full_text}` |
+| `PATCH` | `/documents/{id}/meta` | Update sidecar key (`{key, value}`) |
+| `GET` | `/documents/{id}/bibtex` | Export BibTeX (papers only) |
+| `POST` | `/documents/{id}/move` | Move document (`{destination}`) |
+| `POST` | `/documents/{id}/attach` | Attach file to reference (multipart) |
+| `POST` | `/documents/{id}/detach` | Detach file, converting to reference |
 
-### Papers
-
-Paper-specific endpoints nested under `/documents`.
+### Document Sections
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST` | `/documents/papers/add` | Add paper body: `{filepath, doi, skip_bib, extra_metadata}` → `{id, path, filename}` |
-| `POST` | `/documents/papers/upload` | Upload paper (multipart, query: `doi`, `skip_bib`, `extra_metadata`, `directory`, `filename`) → `{id, path, filename}` |
-| `POST` | `/documents/papers/reference` | Register metadata-only reference body: `{title, author, year, journal, booktitle, doi, url, bibtex, citation_key, extra_metadata}` → `{id, path, filename}` |
+| `GET` | `/documents/{id}/sections` | List defined sections |
+| `POST` | `/documents/{id}/sections` | Add section (`{name, start, end?}`) |
+| `GET` | `/documents/{id}/sections/{index}` | Get section content |
+| `DELETE` | `/documents/{id}/sections/{index}` | Delete section (re-indexes remaining) |
 
 ### Textbooks
 
-Textbook-specific endpoints nested under `/documents`.
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/documents/textbooks/add` | Add textbook (`{filepath, extra_metadata?}`) |
+| `POST` | `/documents/textbooks/upload` | Upload textbook (multipart, query: `variant`, `chapter_breakpoints`) |
+| `GET` | `/documents/{id}/chapters` | List chapters |
+| `GET` | `/documents/{id}/chapters/{index}` | Get chapter by index |
+| `PUT` | `/documents/{id}/chapters` | Redefine breakpoints (`{breakpoints}`) |
+| `DELETE` | `/documents/{id}/chapters/{index}` | Delete directory-type chapter |
+| `POST` | `/documents/{id}/chapters/upload` | Upload chapter file (directory textbooks) |
+
+### Papers
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST` | `/documents/textbooks/add` | Add textbook body: `{filepath, extra_metadata}` → `{id, path, filename}` |
-| `POST` | `/documents/textbooks/upload` | Upload textbook (multipart, query: `extra_metadata`, `directory`, `filename`, `variant`, `chapter_breakpoints`) → `{id, path, filename}` |
-| `POST` | `/documents/{id}/chapters/upload` | Upload chapter file to directory-type textbook (multipart, query: `filename`, `chapter_index`) → chapter metadata |
+| `POST` | `/documents/papers/add` | Add paper (`{filepath, doi?, skip_bib?}`) |
+| `POST` | `/documents/papers/upload` | Upload paper (multipart) |
+| `POST` | `/documents/papers/reference` | Register reference (`{title, author?, year?, ...}`) |
 
-#### Chapter Breakpoints
+### Filesystem
 
-The `chapter_breakpoints` query parameter (file-type textbooks only) lets you split a PDF into chapters at upload time without writing a sidecar file. Two formats are accepted:
-
-**List** — N page boundaries imply N+1 chapters (`[0..bp₀], [bp₀..bp₁], …, [bp₋₁..end]`):
-```
-chapter_breakpoints=[5,10,15]
-# → Chapter 1 (pp. 0–5), Chapter 2 (pp. 5–10), Chapter 3 (pp. 10–15), Chapter 4 (pp. 15–end)
-```
-
-**Dict** — Keys are chapter names, values are end pages (exclusive); `null` means "to end of book":
-```
-chapter_breakpoints={"Introduction":5,"Methods":10,"Results":null}
-# → Introduction (pp. 0–5), Methods (pp. 5–10), Results (pp. 10–end)
-```
-
-Chapters are sorted by page order. The first chapter always starts at page 0.
-
-#### Directory-Type Textbooks
-
-Creating a directory-type textbook (`variant=directory`) requires the `filename` query parameter — it determines the directory name and is used as the default title in metadata.
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/fs` | List directory contents (query: `path`) → `{entries, directories}` |
 
 ## Architecture
 
 ```
 docsearch/
-├── config.py        — Central Config (database home, db path resolution)
-├── core/            — Data models, SQLite repository, indexer, handlers
+├── config.py        — Config (database home, db path resolution)
+├── core/            — Data models, SQLite repo, indexer, handlers
 │   ├── models.py    — Document, Chapter, TextRow, SearchResult, SearchQuery
 │   ├── repository.py — SQLite + FTS5 repository
 │   ├── indexer.py   — Directory scanning, file add/remove, metadata edits
+│   ├── slicing.py   — Runtime line slicing for document sections
 │   ├── sidecars.py  — Sidecar (.meta.json) location and IO
-│   ├── repair.py    — Registry of integrity checks over stored data
+│   ├── repair.py    — Integrity checks over stored data
 │   └── handlers.py  — DocumentHandler pipeline (generic, paper, textbook, reference)
 ├── extractors/      — Pluggable file-type extractors (PDF, DOCX, Markdown)
 ├── cli/             — Click-based CLI commands
-│   ├── utils.py     — CLI path resolution helper (CWD-aware, home-contained)
 └── server/          — FastAPI REST API
-    ├── app.py       — App factory, lifespan, health endpoint
     ├── schemas.py   — Pydantic request/response schemas
-    └── routes/      — Route modules (documents, index, search, papers, textbooks)
+    └── routes/      — Route modules
 ```
 
 Both CLI and API share the same `Repository`, `Indexer`, and `DocumentHandler` classes from `core/`.
