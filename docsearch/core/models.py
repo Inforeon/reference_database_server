@@ -165,6 +165,55 @@ class Chapter:
         )
 
 
+@dataclass
+class Supplement:
+    """A supplementary file within a directory-type paper."""
+
+    id: Optional[int] = None
+    paper_id: int = 0
+    supplement_index: int = 0
+    title: str = ""
+    file_path: Optional[str] = None  # relative path within paper dir
+    metadata: dict[str, Any] = field(default_factory=dict)  # holds sections, etc.
+    full_text: str = ""
+
+    def combined_metadata(self, parent_document: Optional[Document] = None) -> dict[str, Any]:
+        """Return merged metadata: parent paper first, then supplement overrides."""
+        merged: dict[str, Any] = {}
+        if parent_document:
+            merged.update(parent_document.extracted_metadata)
+            merged.update(parent_document.sidecar_metadata)
+        merged.update(self.metadata)
+        return merged
+
+    @classmethod
+    def from_row(cls, row: tuple | dict | sqlite3.Row) -> "Supplement":
+        """Create from a database row (tuple, sqlite3.Row, or dict)."""
+        if hasattr(row, "keys"):
+            keys = row.keys()
+            meta_raw = row["metadata"] if "metadata" in keys else None
+            return cls(
+                id=row["id"] if "id" in keys else None,
+                paper_id=row["paper_id"] if "paper_id" in keys else 0,
+                supplement_index=row["supplement_index"] if "supplement_index" in keys else 0,
+                title=row["title"] if "title" in keys and row["title"] else "",
+                file_path=row["file_path"] if "file_path" in keys and row["file_path"] else None,
+                metadata=_json_object_or_empty(meta_raw),
+                full_text=row["full_text"] if "full_text" in keys and row["full_text"] else "",
+            )
+
+        # Fallback: positional tuple
+        return cls(
+            id=row[0] if len(row) > 0 else None,
+            paper_id=row[1] if len(row) > 1 else 0,
+            supplement_index=row[2] if len(row) > 2 else 0,
+            title=row[3] if len(row) > 3 and row[3] else "",
+            file_path=row[4] if len(row) > 4 and row[4] else None,
+            metadata=_json_object_or_empty(row[5]) if len(row) > 5 else {},
+            full_text=row[6] if len(row) > 6 and row[6] else "",
+        )
+
+
 @dataclass(frozen=True)
 class TextRow:
     """A stored extracted-text payload, addressed independently of its table.
@@ -188,6 +237,7 @@ class SearchResult:
     score: float = 0.0
     snippet: str = ""
     chapter: Optional[Chapter] = None
+    supplement: Optional[Supplement] = None
 
 
 @dataclass

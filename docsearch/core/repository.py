@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
-from .models import Chapter, Document, SearchQuery, SearchResult, TextRow
+from .models import Chapter, Document, SearchQuery, SearchResult, Supplement, TextRow
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +98,44 @@ END;
 
 CREATE INDEX IF NOT EXISTS idx_tc_textbook ON textbook_chapters(textbook_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tc_chapter ON textbook_chapters(textbook_id, chapter_index);
+
+CREATE TABLE IF NOT EXISTS paper_supplements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    paper_id INTEGER NOT NULL,
+    supplement_index INTEGER NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    file_path TEXT,
+    metadata TEXT DEFAULT '{}',
+    full_text TEXT DEFAULT '',
+    FOREIGN KEY (paper_id) REFERENCES documents(id) ON DELETE CASCADE
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS paper_supplements_fts USING fts5(
+    title, full_text,
+    content='paper_supplements',
+    content_rowid='rowid',
+    tokenize='unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS supplements_ai AFTER INSERT ON paper_supplements BEGIN
+    INSERT INTO paper_supplements_fts(rowid, title, full_text)
+        VALUES (new.id, new.title, new.full_text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS supplements_ad AFTER DELETE ON paper_supplements BEGIN
+    INSERT INTO paper_supplements_fts(paper_supplements_fts, rowid, title, full_text)
+        VALUES ('delete', old.id, old.title, old.full_text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS supplements_au AFTER UPDATE ON paper_supplements BEGIN
+    INSERT INTO paper_supplements_fts(paper_supplements_fts, rowid, title, full_text)
+        VALUES ('delete', old.id, old.title, old.full_text);
+    INSERT INTO paper_supplements_fts(rowid, title, full_text)
+        VALUES (new.id, new.title, new.full_text);
+END;
+
+CREATE INDEX IF NOT EXISTS idx_ps_paper ON paper_supplements(paper_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ps_supplement ON paper_supplements(paper_id, supplement_index);
 """
 
 
@@ -884,6 +922,208 @@ class Repository:
             ts = datetime.fromisoformat(query.before).timestamp()
             conditions.append("mtime <= ?")
             params.append(ts)
+
+        where_clause = " AND ".join(conditions)
+        cur = self._conn.execute(
+            f"SELECT id FROM documents WHERE {where_clause}", params
+        )
+        return [row["id"] for row in cur.fetchall()]
+
+    # ── Supplement methods ────────────────────────────────────────────────
+
+    def upsert_supplement(self, supplement: Supplement) -> int:
+        """Insert or update a supplement. Returns the row id."""
+        with self.transaction() as cur:
+            cur.execute(
+                """
+                INSERT INTO paper_supplements (
+                    paper_id, supplement_index, title, file_path, metadata, full_text
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(paper_id, supplement_index) DO UPDATE SET
+                    title = excluded.title,
+                    file_path = excluded.file_path,
+                    metadata = excluded.metadata,
+                    full_text = excluded.full_text
+                """,
+                (
+                    supplement.paper_id,
+                    supplement.supplement_index,
+                    supplement.title,
+                    supplement.file_path,
+                    json.dumps(supplement.metadata),
+                    supplement.full_text,
+                ),
+            )
+            return cur.lastrowid
+
+    def get_supplements(self, paper_id: int) -> list[Supplement]:
+        """Return all supplements for a paper, ordered by supplement_index."""
+        cur = self._conn.execute(
+            "SELECT * FROM paper_supplements WHERE paper_id = ? ORDER BY supplement_index",
+            (paper_id,),
+        )
+        return [Supplement.from_row(row) for row in cur.fetchall()]
+
+    def get_supplement(self, paper_id: int, supplement_index: int) -> Optional[Supplement]:
+        """Return a specific supplement by index."""
+        cur = self._conn.execute(
+            "SELECT * FROM paper_supplements WHERE paper_id = ? AND supplement_index = ?",
+            (paper_id, supplement_index),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return Supplement.from_row(row)
+
+    def delete_supplements(self, paper_id: int) -> int:
+        """Delete all supplements for a paper. Returns number of rows deleted."""
+        with self.transaction() as cur:
+            cur.execute(
+                "DELETE FROM paper_supplements WHERE paper_id = ?",
+                (paper_id,),
+            )
+            return cur.rowcount
+
+    def delete_supplement_by_id(self, supplement_id: int) -> bool:
+        """Delete a specific supplement by its internal ID. Returns True if found."""
+        with self.transaction() as cur:
+            cur.execute("DELETE FROM paper_supplements WHERE id = ?", (supplement_id,))
+            return cur.rowcount > 0
+
+    def update_supplement_metadata(self, supplement_id: int, patch: dict[str, Any]) -> bool:
+        """Merge patch into the metadata column of a supplement."""
+        with self.transaction() as cur:
+            cur.execute(
+                "SELECT metadata FROM paper_supplements WHERE id = ?",
+                (supplement_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return False
+            try:
+                current = json.loads(row["metadata"] or "{}")
+                if not isinstance(current, dict):
+                    current = {}
+            except (json.JSONDecodeError, TypeError):
+                current = {}
+            current.update(patch)
+            cur.execute(
+                "UPDATE paper_supplements SET metadata = ? WHERE id = ?",
+                (json.dumps(current), supplement_id),
+            )
+            return True
+
+    def search_paper_supplements(self, query: SearchQuery) -> list[SearchResult]:
+        """Search paper supplements using a two-phase approach."""
+        supplement_ids = self._resolve_supplement_ids(query)
+        if not supplement_ids:
+            return []
+
+        placeholders = ",".join("?" * len(supplement_ids))
+
+        conditions: list[str] = [f"ps.paper_id IN ({placeholders})"]
+        params: list[Any] = list(supplement_ids)
+        use_fts = bool(query.q)
+
+        if use_fts:
+            conditions.append("paper_supplements_fts MATCH ?")
+            params.append(query.q if query.raw_fts else fts_match_query(query.q))
+
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+
+        if use_fts:
+            sql = f"""
+                SELECT ps.id AS s_id, ps.paper_id, ps.supplement_index,
+                       ps.title AS s_title, ps.file_path AS s_file_path,
+                       ps.metadata AS s_metadata, ps.full_text AS s_full_text,
+                       d.id AS doc_id, d.path, d.filename, d.directory, d.extension,
+                       d.document_type, d.source_type, d.size, d.mtime, d.content_hash,
+                       d.extracted_metadata, d.sidecar_metadata,
+                       d.full_text AS doc_full_text, d.indexed_at,
+                       rank AS relevance
+                FROM paper_supplements ps
+                JOIN paper_supplements_fts ON ps.id = paper_supplements_fts.rowid
+                JOIN documents d ON d.id = ps.paper_id
+                WHERE {where_clause}
+                ORDER BY relevance DESC, ps.supplement_index ASC
+                LIMIT ? OFFSET ?
+            """
+        else:
+            sql = f"""
+                SELECT ps.id AS s_id, ps.paper_id, ps.supplement_index,
+                       ps.title AS s_title, ps.file_path AS s_file_path,
+                       ps.metadata AS s_metadata, ps.full_text AS s_full_text,
+                       d.id AS doc_id, d.path, d.filename, d.directory, d.extension,
+                       d.document_type, d.source_type, d.size, d.mtime, d.content_hash,
+                       d.extracted_metadata, d.sidecar_metadata,
+                       d.full_text AS doc_full_text, d.indexed_at,
+                       0.0 AS relevance
+                FROM paper_supplements ps
+                JOIN documents d ON d.id = ps.paper_id
+                WHERE {where_clause}
+                ORDER BY ps.supplement_index ASC
+                LIMIT ? OFFSET ?
+            """
+
+        params.extend([query.limit, query.offset])
+
+        cur = self._conn.execute(sql, params)
+        results: list[SearchResult] = []
+        for row in cur.fetchall():
+            supplement_row = {
+                "id": row["s_id"],
+                "paper_id": row["paper_id"],
+                "supplement_index": row["supplement_index"],
+                "title": row["s_title"],
+                "file_path": row["s_file_path"],
+                "metadata": row["s_metadata"],
+                "full_text": row["s_full_text"],
+            }
+            supplement = Supplement.from_row(supplement_row)
+            doc_row = {
+                "id": row["doc_id"],
+                "path": row["path"],
+                "filename": row["filename"],
+                "directory": row["directory"],
+                "extension": row["extension"],
+                "document_type": row["document_type"],
+                "source_type": row["source_type"],
+                "size": row["size"],
+                "mtime": row["mtime"],
+                "content_hash": row["content_hash"],
+                "extracted_metadata": row["extracted_metadata"],
+                "sidecar_metadata": row["sidecar_metadata"],
+                "full_text": row["doc_full_text"],
+                "indexed_at": row["indexed_at"],
+            }
+            doc = Document.from_row(doc_row)
+            results.append(
+                SearchResult(
+                    document=doc,
+                    supplement=supplement,
+                    score=row["relevance"] if row["relevance"] else 0.0,
+                )
+            )
+        return results
+
+    def _resolve_supplement_ids(self, query: SearchQuery) -> list[int]:
+        """Find paper document ids that match the given metadata filters (for supplements)."""
+        conditions: list[str] = ["document_type = 'paper'", "source_type = 'directory'"]
+        params: list[Any] = []
+
+        if query.scope:
+            clause, scope_params = _scope_clause(query.scope, "directory")
+            conditions.append(clause)
+            params.extend(scope_params)
+
+        if query.author:
+            clause, author_params = _author_clause(query.author)
+            conditions.append(clause)
+            params.extend(author_params)
+
+        for tag in query.tags:
+            conditions.append(f"json_extract({_json_object('sidecar_metadata')}, '$.tags') LIKE ?")
+            params.append(f"%\"{tag}\"%")
 
         where_clause = " AND ".join(conditions)
         cur = self._conn.execute(

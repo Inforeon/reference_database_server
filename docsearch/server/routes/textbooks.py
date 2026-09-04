@@ -17,9 +17,14 @@ from docsearch.server.schemas import (
     AddTextbookRequest,
     ChapterContentResponse,
     ChapterResponse,
+    SectionContentResponse,
+    SectionInfo,
+    SectionListResponse,
     SetChaptersRequest,
+    SetSectionRequest,
     TextbookUploadResponse,
 )
+from docsearch.core import slicing
 
 router = APIRouter(prefix="/api/documents/textbooks", tags=["textbooks"])
 
@@ -658,5 +663,138 @@ async def delete_chapter(
             file_path=chapter.file_path,
             metadata=chapter.combined_metadata(doc),
         )
+    finally:
+        repo.close()
+
+
+# ── Chapter section endpoints ─────────────────────────────────────
+
+@router.get("/{doc_id}/chapters/{chapter_index}/sections")
+async def list_chapter_sections(
+    doc_id: int, chapter_index: int, config=Depends(get_config)
+) -> SectionListResponse:
+    """List sections for a textbook chapter."""
+    repo = Repository(str(config.db_path), config.home)
+    try:
+        doc = repo.get_by_id(doc_id)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+        if doc.document_type != "textbook":
+            raise HTTPException(status_code=400, detail="Document is not a textbook")
+
+        chapter = repo.get_chapter(doc_id, chapter_index)
+        if not chapter:
+            raise HTTPException(status_code=404, detail="Chapter not found")
+
+        sections = slicing.get_sections_map(chapter.metadata)
+        lines_all = slicing.split_lines(chapter.full_text)
+        section_infos = []
+        for sec in sections:
+            end = sec["end"] if sec["end"] is not None else len(lines_all) - 1
+            count = end - sec["start"] + 1
+            section_infos.append(SectionInfo(
+                index=sec["index"],
+                name=sec["name"],
+                start=sec["start"],
+                end=sec["end"],
+                line_count=count,
+            ))
+
+        return SectionListResponse(
+            id=chapter.id,
+            path=f"{doc.path} :: {chapter.title}",
+            sections=section_infos,
+        )
+    finally:
+        repo.close()
+
+
+@router.post("/{doc_id}/chapters/{chapter_index}/sections")
+async def add_chapter_section(
+    doc_id: int, chapter_index: int, request: SetSectionRequest, config=Depends(get_config)
+) -> dict:
+    """Add a section to a textbook chapter."""
+    repo = Repository(str(config.db_path), config.home)
+    try:
+        chapter = repo.get_chapter(doc_id, chapter_index)
+        if not chapter:
+            raise HTTPException(status_code=404, detail="Chapter not found")
+
+        meta = dict(chapter.metadata)
+        current_sections = meta.get("sections", {})
+        existing_indices = [int(k) for k in current_sections.keys() if k.isdigit()]
+        new_idx = max(existing_indices, default=-1) + 1
+        current_sections[str(new_idx)] = {
+            "name": request.name,
+            "start": request.start,
+            "end": request.end,
+        }
+        meta["sections"] = current_sections
+
+        chapter.metadata = meta
+        repo.upsert_chapter(chapter)
+        return {"added": True, "section_index": new_idx}
+    finally:
+        repo.close()
+
+
+@router.get("/{doc_id}/chapters/{chapter_index}/sections/{section_index}")
+async def get_chapter_section(
+    doc_id: int, chapter_index: int, section_index: int, config=Depends(get_config)
+) -> SectionContentResponse:
+    """Get a section from a textbook chapter."""
+    repo = Repository(str(config.db_path), config.home)
+    try:
+        chapter = repo.get_chapter(doc_id, chapter_index)
+        if not chapter:
+            raise HTTPException(status_code=404, detail="Chapter not found")
+
+        sections = slicing.get_sections_map(chapter.metadata)
+        sec = next((s for s in sections if s["index"] == section_index), None)
+        if not sec:
+            raise HTTPException(status_code=404, detail=f"Section {section_index} not found")
+
+        lines_all = slicing.split_lines(chapter.full_text)
+        content = slicing.get_section_text(lines_all, sec)
+
+        return SectionContentResponse(
+            id=chapter.id,
+            path=f"{doc_id}",
+            section_index=sec["index"],
+            section_name=sec["name"],
+            start=sec["start"],
+            end=sec["end"],
+            content=content,
+        )
+    finally:
+        repo.close()
+
+
+@router.delete("/{doc_id}/chapters/{chapter_index}/sections/{section_index}")
+async def delete_chapter_section(
+    doc_id: int, chapter_index: int, section_index: int, config=Depends(get_config)
+) -> dict:
+    """Delete a section from a textbook chapter."""
+    repo = Repository(str(config.db_path), config.home)
+    try:
+        chapter = repo.get_chapter(doc_id, chapter_index)
+        if not chapter:
+            raise HTTPException(status_code=404, detail="Chapter not found")
+
+        meta = dict(chapter.metadata)
+        sections_dict = meta.get("sections", {})
+        if str(section_index) not in sections_dict:
+            raise HTTPException(status_code=404, detail=f"Section {section_index} not found")
+
+        del sections_dict[str(section_index)]
+        reindexed = slicing.reindex_sections(sections_dict)
+        if reindexed:
+            meta["sections"] = reindexed
+        else:
+            meta.pop("sections", None)
+
+        chapter.metadata = meta
+        repo.upsert_chapter(chapter)
+        return {"deleted": True, "section_index": section_index}
     finally:
         repo.close()

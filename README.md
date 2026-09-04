@@ -7,8 +7,9 @@ Document metadata index and search engine for managing reference material (resea
 - **Multi-format extraction** — PDF (PyMuPDF), DOCX (python-docx), Markdown/Text (PyYAML frontmatter)
 - **Full-text search** — FTS5 with filters on scope, file type, author, tags, date range, document type
 - **Document types** — generic, paper (with BibTeX via pdf2bib), textbook (chapter-level indexing), reference (metadata-only)
+- **Directory-type papers** — Papers with supplementary material; auto-convert file→directory when first supplement attached
 - **Sidecar metadata** — Editable `<file>.meta.json` for tagging without modifying source files
-- **Document sections** — Define named line ranges in sidecar metadata; retrieve partial content to reduce context bloat
+- **Document sections** — Define named line ranges in sidecar metadata for documents, chapters, and supplements; retrieve partial content to reduce context bloat
 - **Two interfaces** — Click CLI for local workflows, FastAPI REST API for remote access
 
 ## Installation
@@ -83,8 +84,8 @@ docsearch papers add paper.pdf    # indexes as proj_1/paper.pdf
 | Source Type | Applies To | Description |
 |---|---|---|
 | `file` | All types | Backed by a file on disk (default) |
-| `directory` | Textbooks only | Directory-based textbook, one file per chapter |
-| `reference` | Papers only | Metadata-only entry with no associated file |
+| `directory` | Textbooks, Papers | Directory-based with child files (chapters for textbooks, supplements for papers) |
+| `reference` | Papers, Textbooks, Generic | Metadata-only entry with no associated file |
 
 ## CLI Reference
 
@@ -159,11 +160,17 @@ docsearch get 42 --lines "0-99,200-299"  # by line ranges
 
 | Command | Description |
 |---|---|
-| `papers add <FILE>` | Add paper (`--doi`, `--skip-bib`, `-m KEY=VALUE`) |
+| `papers add <FILE\|DIR>` | Add paper or directory (`--doi`, `--skip-bib`, `--primary FILE` for dirs) |
 | `papers upload <FILE>` | Upload and auto-index (`-n NAME`, `-D DIR`) |
 | `papers reference` | Register metadata-only reference (`-t TITLE`, `-a AUTHOR`, `-y YEAR`, `-j JOURNAL`, `-d DOI`, `-k CITATION_KEY`) |
+| `papers list-supplements <ID>` | List supplements for directory-type paper |
+| `papers supplement <ID> <INDEX>` | Get supplement text (`--sections`, `--lines`, `--list-sections`, `--set-section`, `--delete-section`) |
+| `papers attach-supplement <ID> <FILE>` | Attach supplement (auto-converts file→directory) |
+| `papers detach-supplement <ID> <INDEX>` | Remove supplement from directory paper |
 
 Use full DOIs (e.g. `10.48550/arXiv.2506.13131`) — bare arXiv IDs may hang pdf2bib. Title validation corroborates retrieved metadata against the file before storing.
+
+**Directory-type papers:** Accept a directory containing a primary PDF and supplementary files. Use `--primary` to specify which file is the main paper (auto-detected if only one PDF exists). The sidecar `<dirname>.meta.json` stores `"primary"` key and optional `"supplements"` config.
 
 ### Textbooks
 
@@ -176,7 +183,7 @@ Use full DOIs (e.g. `10.48550/arXiv.2506.13131`) — bare arXiv IDs may hang pdf
 | `textbooks attach-chapter <ID> <FILE>` | Associate chapter file with directory textbook (`-i INDEX`) |
 | `textbooks detach-chapter <ID> <INDEX>` | Remove chapter from directory textbook |
 | `textbooks chapters <FILE>` | List indexed chapters |
-| `textbooks chapter <FILE>` | Print chapter text (`-i INDEX`) |
+| `textbooks chapter <FILE>` | Print chapter text (`-i INDEX`, `--sections`, `--lines`, `--list-sections`, `--set-section`, `--delete-section`) |
 
 **Chapter breakpoints:** List `[5,10]` for page boundaries (N boundaries → N+1 auto-named chapters), or dict `{"Intro":5,"Methods":10}` for named chapters. First chapter always starts at page 0.
 
@@ -260,6 +267,21 @@ All routes prefixed with `/api`.
 | `POST` | `/documents/papers/upload` | Upload paper (multipart) |
 | `POST` | `/documents/papers/reference` | Register reference (`{title, author?, year?, ...}`) |
 
+### Supplements
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/documents/{id}/supplements` | List supplements |
+| `GET` | `/documents/{id}/supplements/{index}` | Get supplement (`?lines=RANGES`, `?section=INDEX`) |
+| `POST` | `/documents/{id}/supplements/upload` | Upload supplement (auto-converts file→directory) |
+| `DELETE` | `/documents/{id}/supplements/{index}` | Delete supplement |
+
+**Supplement sections:** Same pattern as document sections — `GET/POST/DELETE /documents/{id}/supplements/{idx}/sections[/{sidx}]`.
+
+### Chapter Sections
+
+Chapter sections follow the same pattern: `GET/POST/DELETE /documents/textbooks/{id}/chapters/{idx}/sections[/{sidx}]` with `{name, start, end?}` for adding.
+
 ### Filesystem
 
 | Method | Endpoint | Description |
@@ -272,10 +294,10 @@ All routes prefixed with `/api`.
 docsearch/
 ├── config.py        — Config (database home, db path resolution)
 ├── core/            — Data models, SQLite repo, indexer, handlers
-│   ├── models.py    — Document, Chapter, TextRow, SearchResult, SearchQuery
+│   ├── models.py    — Document, Chapter, Supplement, TextRow, SearchResult, SearchQuery
 │   ├── repository.py — SQLite + FTS5 repository
-│   ├── indexer.py   — Directory scanning, file add/remove, metadata edits
-│   ├── slicing.py   — Runtime line slicing for document sections
+│   ├── indexer.py   — Directory scanning, file add/remove, metadata edits, convert_to_directory()
+│   ├── slicing.py   — Runtime line slicing for document/chapter/supplement sections
 │   ├── sidecars.py  — Sidecar (.meta.json) location and IO
 │   ├── repair.py    — Integrity checks over stored data
 │   └── handlers.py  — DocumentHandler pipeline (generic, paper, textbook, reference)
@@ -283,7 +305,7 @@ docsearch/
 ├── cli/             — Click-based CLI commands
 └── server/          — FastAPI REST API
     ├── schemas.py   — Pydantic request/response schemas
-    └── routes/      — Route modules
+    └── routes/      — Route modules (documents incl. supplements, textbooks, papers)
 ```
 
 Both CLI and API share the same `Repository`, `Indexer`, and `DocumentHandler` classes from `core/`.

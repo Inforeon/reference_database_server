@@ -9,7 +9,7 @@ import unicodedata
 from pathlib import Path
 from typing import Any, Optional
 
-from .models import Document
+from .models import Document, Supplement
 from .repository import Repository
 from .sidecars import load_sidecar, sidecar_path, write_sidecar
 from ..extractors import load_extractors, sanitize_text
@@ -545,6 +545,194 @@ class PaperDocumentHandler(DocumentHandler):
             doc.sidecar_metadata["bibtex"] = bibtex
         return doc
 
+    def handle(self, filepath: Path, reference: bool = False) -> Optional[Document]:
+        """Run the paper indexing pipeline. Dispatches to directory or file handling."""
+        if reference:
+            return self._handle_reference(filepath)
+
+        if filepath.is_dir():
+            # For directories, pre_process runs on the primary PDF
+            sidecar_meta = self._load_directory_sidecar(filepath)
+            merged_sidecar = {**sidecar_meta, **self.extra_metadata}
+            primary_name = merged_sidecar.get("primary")
+            if not primary_name:
+                pdfs = [f for f in filepath.iterdir() if f.is_file() and f.suffix.lower() == ".pdf"]
+                if len(pdfs) == 1:
+                    primary_name = pdfs[0].name
+                    merged_sidecar["primary"] = primary_name
+                    self.extra_metadata = merged_sidecar
+                else:
+                    logger.error(
+                        "Directory %s has no 'primary' key in sidecar and cannot auto-detect "
+                        "(found %d PDFs). Set --primary or add 'primary' to sidecar.",
+                        filepath, len(pdfs)
+                    )
+                    return None
+            primary_path = filepath / primary_name
+            self.pre_process(primary_path)
+            return self._handle_directory(filepath, primary_name)
+        else:
+            self.pre_process(filepath)
+            return self._handle_file(filepath)
+
+    def _handle_file(self, filepath: Path) -> Optional[Document]:
+        """Handle a single-PDF paper (original logic from base handle)."""
+        if not self._has_extractor(filepath):
+            return None
+
+        try:
+            stat = filepath.stat()
+            content_hash = self._compute_hash(filepath)
+
+            extracted_meta = self.extract_metadata(filepath)
+            full_text = self.extract_text(filepath)
+            sidecar_meta = self._load_sidecar(filepath)
+
+            merged_sidecar = {**sidecar_meta, **self.extra_metadata}
+
+            doc = Document(
+                path=self._rel(filepath),
+                filename=filepath.name,
+                directory=self._rel(filepath.parent),
+                extension=filepath.suffix.lower().lstrip("."),
+                document_type=self.document_type,
+                size=stat.st_size,
+                mtime=stat.st_mtime,
+                content_hash=content_hash,
+                extracted_metadata=extracted_meta,
+                sidecar_metadata=merged_sidecar,
+                full_text=full_text,
+            )
+
+            doc = self.post_process(doc)
+            doc.id = self.repo.upsert(doc)
+            self._save_sidecar(filepath, merged_sidecar)
+            return doc
+        except Exception as e:
+            logger.error("Paper handler failed on %s: %s", filepath, e)
+            return None
+
+    def _handle_directory(self, dirpath: Path, primary_name: str) -> Optional[Document]:
+        """Handle a directory-based paper with primary PDF and supplementary files."""
+        try:
+            sidecar_meta = self._load_directory_sidecar(dirpath)
+            merged_sidecar = {**sidecar_meta, **self.extra_metadata}
+
+            primary_path = dirpath / primary_name
+            if not primary_path.is_file():
+                logger.error("Primary PDF '%s' not found in %s", primary_name, dirpath)
+                return None
+
+            extracted_meta = self.extract_metadata(primary_path)
+
+            searchable_parts = []
+            for key in ("title", "author", "journal", "booktitle", "abstract"):
+                val = merged_sidecar.get(key) or extracted_meta.get(key)
+                if val:
+                    searchable_parts.append(str(val))
+            full_text = " ".join(searchable_parts)
+
+            dir_stat = dirpath.stat()
+            doc = Document(
+                path=self._rel(dirpath),
+                filename=dirpath.name,
+                directory=self._rel(dirpath.parent),
+                extension="",
+                document_type=self.document_type,
+                source_type="directory",
+                size=dir_stat.st_size,
+                mtime=dir_stat.st_mtime,
+                content_hash="",
+                extracted_metadata=extracted_meta,
+                sidecar_metadata=merged_sidecar,
+                full_text=full_text,
+            )
+
+            doc = self.post_process(doc)
+            row_id = self.repo.upsert(doc)
+            doc.id = row_id
+
+            if doc.id is not None:
+                self.repo.delete_supplements(doc.id)
+                self._insert_supplements(dirpath, doc.id, merged_sidecar, primary_name)
+
+            self._save_directory_sidecar(dirpath, merged_sidecar)
+            return doc
+        except Exception as e:
+            logger.error("Paper directory handler failed on %s: %s", dirpath, e)
+            return None
+
+    def _load_directory_sidecar(self, dirpath: Path) -> dict[str, Any]:
+        return load_sidecar(sidecar_path(dirpath, "directory"))
+
+    def _save_directory_sidecar(self, dirpath: Path, metadata: dict[str, Any]) -> None:
+        write_sidecar(sidecar_path(dirpath, "directory"), metadata)
+
+    def _insert_supplements(
+        self, dirpath: Path, paper_id: int, sidecar_meta: dict[str, Any], primary_name: str
+    ) -> None:
+        """Extract text for each supplement file and upsert into the database."""
+        supplements_config = sidecar_meta.get("supplements", {})
+
+        if isinstance(supplements_config, dict) and supplements_config:
+            for idx_str, sup_info in sorted(supplements_config.items(), key=lambda x: int(x[0])):
+                try:
+                    idx = int(idx_str)
+                except (ValueError, TypeError):
+                    continue
+                filename = sup_info.get("file", sup_info.get("filename", ""))
+                if not filename:
+                    continue
+                supplement_path = dirpath / filename
+                if not supplement_path.is_file():
+                    logger.warning("Supplement file not found: %s", supplement_path)
+                    continue
+
+                title = sup_info.get("name", filename.replace(".pdf", "").replace("_", " ").title())
+                meta = {k: v for k, v in sup_info.items() if k not in ("file", "filename")}
+
+                ext = supplement_path.suffix.lower().lstrip(".")
+                extractor = self._extractors.get(ext)
+                full_text = ""
+                if extractor:
+                    _, full_text = extractor.extract(str(supplement_path))
+
+                supplement = Supplement(
+                    paper_id=paper_id,
+                    supplement_index=idx,
+                    title=title,
+                    file_path=filename,
+                    metadata=meta,
+                    full_text=full_text,
+                )
+                self.repo.upsert_supplement(supplement)
+        else:
+            all_files = sorted(dirpath.iterdir())
+            for i, f in enumerate(all_files):
+                if not f.is_file() or f.name == primary_name:
+                    continue
+                if f.suffix == ".json" and f.stem == dirpath.name:
+                    continue
+                if not self._has_extractor(f):
+                    continue
+
+                title = f.stem.replace("_", " ").replace("-", " ").title()
+                ext = f.suffix.lower().lstrip(".")
+                extractor = self._extractors.get(ext)
+                full_text = ""
+                if extractor:
+                    _, full_text = extractor.extract(str(f))
+
+                supplement = Supplement(
+                    paper_id=paper_id,
+                    supplement_index=i,
+                    title=title,
+                    file_path=f.name,
+                    metadata={},
+                    full_text=full_text,
+                )
+                self.repo.upsert_supplement(supplement)
+
     def _handle_reference(self, filepath: Path) -> Optional[Document]:
         """Handle a metadata-only paper reference (no PDF on disk).
 
@@ -798,11 +986,15 @@ class TextbookDocumentHandler(DocumentHandler):
             for i, entry in enumerate(sidecar_meta["chapters"]):
                 fname = entry.get("file", entry.get("filename", ""))
                 title = entry.get("title", fname.replace(".pdf", "").replace("_", " ").title())
-                chapters.append({
+                ch_info = {
                     "index": entry.get("index", i),
                     "title": title,
                     "file_path": fname,
-                })
+                }
+                # Carry through sidecar data (e.g. sections)
+                if "sections" in entry:
+                    ch_info["sections"] = entry["sections"]
+                chapters.append(ch_info)
             # Only include chapters whose files actually exist
             existing = {f.name for f in indexable}
             chapters = [ch for ch in chapters if ch["file_path"] in existing]
@@ -834,6 +1026,10 @@ class TextbookDocumentHandler(DocumentHandler):
                 meta, text = extractor.extract(str(chapter_path))
             else:
                 meta, text = {}, ""
+
+            # Merge sidecar chapter data (e.g. sections) with extractor metadata
+            if "sections" in ch_info:
+                meta["sections"] = ch_info["sections"]
 
             page_count = self._get_page_count(chapter_path)
 

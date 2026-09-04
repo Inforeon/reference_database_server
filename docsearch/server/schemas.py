@@ -367,6 +367,56 @@ class SearchResponse(BaseModel):
     chapters: ChapterSearchGroup
 
 
+# ── Supplement schemas ─────────────────────────────────────────────
+
+class SupplementResponse(BaseModel):
+    """Metadata for a single paper supplement (no full_text)."""
+    id: int
+    paper_id: int
+    supplement_index: int
+    title: str
+    file_path: str | None = None
+    metadata: dict[str, Any] = {}
+
+
+class SupplementContentResponse(BaseModel):
+    """A paper supplement with its extracted text."""
+    id: int
+    paper_id: int
+    supplement_index: int
+    title: str
+    file_path: str | None = None
+    metadata: dict[str, Any] = {}
+    content: str
+
+
+class SupplementListResponse(BaseModel):
+    """List of supplements for a paper."""
+    id: int
+    path: str
+    supplements: list[SupplementResponse]
+
+
+class SupplementSearchResultResponse(BaseModel):
+    """A supplement-level search hit with parent paper context."""
+    supplement: SupplementResponse
+    parent_document: DocumentResponse
+    score: float = 0.0
+
+
+class SupplementSearchGroup(BaseModel):
+    """Paginated group of supplement-level search results."""
+    results: list[SupplementSearchResultResponse]
+    total: int
+
+
+class FullSearchResponse(BaseModel):
+    """Combined search response with document, chapter, and supplement groups."""
+    documents: DocumentSearchGroup
+    chapters: ChapterSearchGroup
+    supplements: SupplementSearchGroup
+
+
 # ── Filesystem browsing schemas ────────────────────────────────────
 
 class FileSystemEntry(BaseModel):

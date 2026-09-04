@@ -9,8 +9,9 @@ from fastapi.responses import FileResponse
 
 from docsearch.core.handlers import _generate_bibtex_from_metadata
 from docsearch.core.indexer import Indexer
-from docsearch.core.models import Document
+from docsearch.core.models import Document, Supplement
 from docsearch.core.repository import Repository
+from docsearch.core import slicing
 from docsearch.server.dependencies import get_config
 from docsearch.server.schemas import (
     AddGenericReferenceRequest,
@@ -24,6 +25,9 @@ from docsearch.server.schemas import (
     SectionInfo,
     SectionListResponse,
     SetSectionRequest,
+    SupplementContentResponse,
+    SupplementListResponse,
+    SupplementResponse,
     UploadResponse,
     _extract_title,
     _extract_year,
@@ -701,3 +705,217 @@ def _doc_to_response(doc: Document) -> DocumentResponse:
         metadata=doc.combined_metadata,
         indexed_at=doc.indexed_at,
     )
+
+
+# ── Supplement endpoints (must be before catch-all /{doc_id}) ────
+
+@router.get("/{doc_id}/supplements", response_model=SupplementListResponse)
+async def list_supplements(doc_id: int, config=Depends(get_config)) -> SupplementListResponse:
+    """List all supplements for a directory-type paper."""
+    repo = Repository(str(config.db_path), config.home)
+    try:
+        doc = repo.get_by_id(doc_id)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+        if doc.document_type != "paper":
+            raise HTTPException(status_code=400, detail="Document is not a paper")
+
+        supplements = repo.get_supplements(doc_id)
+        return SupplementListResponse(
+            id=doc_id, path=doc.path,
+            supplements=[SupplementResponse(id=s.id, paper_id=s.paper_id, supplement_index=s.supplement_index,
+                                            title=s.title, file_path=s.file_path, metadata=s.metadata) for s in supplements],
+        )
+    finally:
+        repo.close()
+
+
+@router.get("/{doc_id}/supplements/{supplement_index}", response_model=SupplementContentResponse)
+async def get_supplement(doc_id: int, supplement_index: int,
+                         lines: str | None = Query(None), section: int | None = Query(None),
+                         config=Depends(get_config)) -> SupplementContentResponse:
+    """Get a supplement by index, optionally sliced by lines or section."""
+    repo = Repository(str(config.db_path), config.home)
+    try:
+        doc = repo.get_by_id(doc_id)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+        sup = repo.get_supplement(doc_id, supplement_index)
+        if not sup:
+            raise HTTPException(status_code=404, detail="Supplement not found")
+
+        content = sup.full_text
+        if section is not None:
+            sec_list = slicing.get_sections_map(sup.metadata)
+            sec = next((s for s in sec_list if s["index"] == section), None)
+            if not sec:
+                raise HTTPException(status_code=404, detail=f"Section {section} not found")
+            content = slicing.get_section_text(slicing.split_lines(content), sec)
+        elif lines:
+            content = slicing.slice_lines(slicing.split_lines(content), lines)
+
+        return SupplementContentResponse(id=sup.id, paper_id=sup.paper_id, supplement_index=sup.supplement_index,
+                                         title=sup.title, file_path=sup.file_path, metadata=sup.metadata, content=content)
+    finally:
+        repo.close()
+
+
+@router.post("/{doc_id}/supplements/upload", response_model=SupplementResponse)
+async def upload_supplement(doc_id: int, file: UploadFile = File(...),
+                            directory: str = Query(""), filename: str | None = Query(None),
+                            config=Depends(get_config)) -> SupplementResponse:
+    """Upload a supplement file. Auto-converts file-type papers to directory-type."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
+
+    target_dir = Path(config.home) / directory if directory else Path(config.home)
+    target_dir = target_dir.resolve()
+    if not str(target_dir).startswith(str(config.home)):
+        raise HTTPException(status_code=400, detail="Directory must be within the database home")
+    if not target_dir.is_dir():
+        raise HTTPException(status_code=400, detail=f"Directory does not exist: {target_dir}")
+
+    sup_filename = filename or file.filename
+    sup_path = target_dir / sup_filename
+    with open(sup_path, "wb") as f:
+        f.write(await file.read())
+
+    repo = Repository(str(config.db_path), config.home)
+    try:
+        indexer = Indexer(repo, config.home)
+        rel_path = str(sup_path.relative_to(config.home))
+        doc = indexer.convert_to_directory(doc_id, rel_path, sup_filename)
+        if not doc:
+            raise HTTPException(status_code=500, detail="Failed to attach supplement")
+        supplements = repo.get_supplements(doc_id)
+        if not supplements:
+            raise HTTPException(status_code=500, detail="Supplement was not indexed")
+        sup = supplements[-1]
+        return SupplementResponse(id=sup.id, paper_id=sup.paper_id, supplement_index=sup.supplement_index,
+                                  title=sup.title, file_path=sup.file_path, metadata=sup.metadata)
+    finally:
+        repo.close()
+
+
+@router.delete("/{doc_id}/supplements/{supplement_index}")
+async def delete_supplement(doc_id: int, supplement_index: int, config=Depends(get_config)) -> dict:
+    """Delete a supplement by index."""
+    repo = Repository(str(config.db_path), config.home)
+    try:
+        doc = repo.get_by_id(doc_id)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+        if doc.source_type != "directory":
+            raise HTTPException(status_code=400, detail="Document is not a directory-type paper")
+        sup = repo.get_supplement(doc_id, supplement_index)
+        if not sup:
+            raise HTTPException(status_code=404, detail="Supplement not found")
+
+        repo.delete_supplement_by_id(sup.id)
+        from docsearch.core.sidecars import sidecar_path
+        dir_p = Path(config.home) / doc.path
+        if sup.file_path and (dir_p / sup.file_path).is_file():
+            (dir_p / sup.file_path).unlink()
+
+        from docsearch.core.sidecars import load_sidecar, write_sidecar
+        sidecar = sidecar_path(dir_p, "directory")
+        meta = load_sidecar(sidecar)
+        supplements = meta.get("supplements", {})
+        if str(supplement_index) in supplements:
+            del supplements[str(supplement_index)]
+            reindexed = {}
+            for new_i, (_, val) in enumerate(sorted(supplements.items(), key=lambda x: int(x[0]))):
+                reindexed[str(new_i)] = val
+            meta["supplements"] = reindexed
+            write_sidecar(sidecar, meta)
+
+        return {"deleted": True, "supplement_index": supplement_index}
+    finally:
+        repo.close()
+
+
+@router.get("/{doc_id}/supplements/{supplement_index}/sections", response_model=SectionListResponse)
+async def list_supplement_sections(doc_id: int, supplement_index: int, config=Depends(get_config)) -> SectionListResponse:
+    """List sections for a supplement."""
+    repo = Repository(str(config.db_path), config.home)
+    try:
+        doc = repo.get_by_id(doc_id)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+        sup = repo.get_supplement(doc_id, supplement_index)
+        if not sup:
+            raise HTTPException(status_code=404, detail="Supplement not found")
+
+        sections = slicing.get_sections_map(sup.metadata)
+        lines_all = slicing.split_lines(sup.full_text)
+        section_infos = [SectionInfo(index=sec["index"], name=sec["name"], start=sec["start"], end=sec["end"],
+                                     line_count=(sec["end"] if sec["end"] is not None else len(lines_all)-1) - sec["start"] + 1)
+                         for sec in sections]
+        return SectionListResponse(id=sup.id, path=f"{doc.path} :: {sup.title}", sections=section_infos)
+    finally:
+        repo.close()
+
+
+@router.post("/{doc_id}/supplements/{supplement_index}/sections")
+async def add_supplement_section(doc_id: int, supplement_index: int, request: SetSectionRequest,
+                                 config=Depends(get_config)) -> dict:
+    """Add a section to a supplement."""
+    repo = Repository(str(config.db_path), config.home)
+    try:
+        sup = repo.get_supplement(doc_id, supplement_index)
+        if not sup:
+            raise HTTPException(status_code=404, detail="Supplement not found")
+        meta = dict(sup.metadata)
+        current_sections = meta.get("sections", {})
+        existing_indices = [int(k) for k in current_sections.keys() if k.isdigit()]
+        new_idx = max(existing_indices, default=-1) + 1
+        current_sections[str(new_idx)] = {"name": request.name, "start": request.start, "end": request.end}
+        meta["sections"] = current_sections
+        repo.update_supplement_metadata(sup.id, meta)
+        return {"added": True, "section_index": new_idx}
+    finally:
+        repo.close()
+
+
+@router.get("/{doc_id}/supplements/{supplement_index}/sections/{section_index}", response_model=SectionContentResponse)
+async def get_supplement_section(doc_id: int, supplement_index: int, section_index: int,
+                                 config=Depends(get_config)) -> SectionContentResponse:
+    """Get a section from a supplement."""
+    repo = Repository(str(config.db_path), config.home)
+    try:
+        sup = repo.get_supplement(doc_id, supplement_index)
+        if not sup:
+            raise HTTPException(status_code=404, detail="Supplement not found")
+        sections = slicing.get_sections_map(sup.metadata)
+        sec = next((s for s in sections if s["index"] == section_index), None)
+        if not sec:
+            raise HTTPException(status_code=404, detail=f"Section {section_index} not found")
+        content = slicing.get_section_text(slicing.split_lines(sup.full_text), sec)
+        return SectionContentResponse(id=sup.id, path=str(doc_id), section_index=sec["index"],
+                                      section_name=sec["name"], start=sec["start"], end=sec["end"], content=content)
+    finally:
+        repo.close()
+
+
+@router.delete("/{doc_id}/supplements/{supplement_index}/sections/{section_index}")
+async def delete_supplement_section(doc_id: int, supplement_index: int, section_index: int,
+                                    config=Depends(get_config)) -> dict:
+    """Delete a section from a supplement."""
+    repo = Repository(str(config.db_path), config.home)
+    try:
+        sup = repo.get_supplement(doc_id, supplement_index)
+        if not sup:
+            raise HTTPException(status_code=404, detail="Supplement not found")
+        meta = dict(sup.metadata)
+        sections_dict = meta.get("sections", {})
+        if str(section_index) not in sections_dict:
+            raise HTTPException(status_code=404, detail=f"Section {section_index} not found")
+        del sections_dict[str(section_index)]
+        reindexed = slicing.reindex_sections(sections_dict)
+        meta["sections"] = reindexed if reindexed else {}
+        if not reindexed:
+            meta.pop("sections", None)
+        repo.update_supplement_metadata(sup.id, meta)
+        return {"deleted": True, "section_index": section_index}
+    finally:
+        repo.close()

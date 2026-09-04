@@ -10,6 +10,7 @@ from docsearch.cli.utils import parse_breakpoints, parse_meta_pairs, resolve_use
 from docsearch.core.indexer import Indexer
 from docsearch.core.models import Chapter
 from docsearch.core.repository import Repository
+from docsearch.core import slicing
 from docsearch.extractors import load_extractors
 
 
@@ -328,9 +329,21 @@ def chapters(ctx: dict, filepath: str) -> None:
 @textbooks.command(name="chapter")
 @click.argument("filepath")
 @click.option("--index", "-i", required=True, type=int, help="Chapter index (zero-based).")
+@click.option("-s", "--sections", help="Comma-separated section indices to retrieve.")
+@click.option("--lines", help="Comma-separated line ranges (e.g. '0-99,200-299').")
+@click.option("--list-sections", "-L", is_flag=True, help="List sections for this chapter.")
+@click.option("--set-section", type=(str, int, int), nargs=3, metavar="NAME START END", help="Add a section (NAME START_LINE END_LINE).")
+@click.option("--delete-section", "-D", type=int, metavar="INDEX", help="Delete a section by index.")
 @click.pass_obj
-def chapter(ctx: dict, filepath: str, index: int) -> None:
-    """Print the full text of a specific chapter."""
+def chapter(ctx: dict, filepath: str, index: int, sections: str | None, lines: str | None,
+            list_sections: bool, set_section: tuple[str, int, int] | None,
+            delete_section: int | None) -> None:
+    """Print the full text of a specific chapter.
+
+    Optionally slice by section indices (``--sections``) or line ranges
+    (``--lines``). Manage sections with ``--list-sections``, ``--set-section``,
+    and ``--delete-section``.
+    """
     config = ctx["config"]
     rel_filepath = resolve_user_path_to_home_relative(config, filepath, require_file=True)
     repo = Repository(str(config.db_path), config.home)
@@ -348,8 +361,75 @@ def chapter(ctx: dict, filepath: str, index: int) -> None:
             click.echo(f"Chapter {index} not found.", err=True)
             return
 
-        click.echo(f"Chapter {ch.chapter_index}: {ch.title} (pp. {ch.start_page}–{ch.end_page})\n")
-        click.echo(ch.full_text)
+        # Section management operations
+        if list_sections:
+            sec_list = slicing.get_sections_map(ch.metadata)
+            if not sec_list:
+                click.echo(f"No sections defined on chapter '{ch.title}'")
+                return
+            lines_all = slicing.split_lines(ch.full_text)
+            click.echo(f"Sections for chapter [{index}] {ch.title}:")
+            for sec in sec_list:
+                end_label = sec["end"] if sec["end"] is not None else "end"
+                count = (sec["end"] if sec["end"] is not None else len(lines_all)) - sec["start"] + 1
+                click.echo(f"  [{sec['index']}] {sec['name']} (lines {sec['start']}–{end_label}, {count} lines)")
+            return
+
+        if set_section:
+            name, start, end = set_section
+            # Get current metadata and add section
+            meta = dict(ch.metadata)
+            current_sections = meta.get("sections", {})
+            existing_indices = [int(k) for k in current_sections.keys() if k.isdigit()]
+            new_idx = max(existing_indices, default=-1) + 1
+            current_sections[str(new_idx)] = {"name": name, "start": start, "end": end}
+            meta["sections"] = current_sections
+            # Update chapter metadata in DB
+            from docsearch.core.models import Chapter as ChapterModel
+            ch.metadata = meta
+            repo.upsert_chapter(ch)
+            click.echo(f"Added section '{name}' at index {new_idx}")
+            return
+
+        if delete_section is not None:
+            meta = dict(ch.metadata)
+            sections_dict = meta.get("sections", {})
+            if str(delete_section) not in sections_dict:
+                available = list(sections_dict.keys()) if sections_dict else "(none)"
+                click.echo(f"Section {delete_section} not found. Available: {available}", err=True)
+                return
+            del sections_dict[str(delete_section)]
+            reindexed = slicing.reindex_sections(sections_dict)
+            if reindexed:
+                meta["sections"] = reindexed
+            else:
+                meta.pop("sections", None)
+            ch.metadata = meta
+            repo.upsert_chapter(ch)
+            click.echo(f"Deleted section {delete_section}")
+            return
+
+        # Text retrieval
+        lines_all = slicing.split_lines(ch.full_text)
+
+        if sections:
+            parts = []
+            for idx_str in sections.split(","):
+                idx = int(idx_str.strip())
+                sec_list = slicing.get_sections_map(ch.metadata)
+                sec = next((s for s in sec_list if s["index"] == idx), None)
+                if not sec:
+                    click.echo(f"Section {idx} not found", err=True)
+                    return
+                text = slicing.get_section_text(lines_all, sec)
+                parts.append(text)
+            click.echo("\n".join(parts))
+        elif lines:
+            text = slicing.slice_lines(lines_all, lines)
+            click.echo(text)
+        else:
+            click.echo(f"Chapter {ch.chapter_index}: {ch.title} (pp. {ch.start_page}–{ch.end_page})\n")
+            click.echo(ch.full_text)
     finally:
         repo.close()
 

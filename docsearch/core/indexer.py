@@ -50,8 +50,8 @@ class Indexer:
         from available metadata instead).
         """
         p = (self.home / filepath).resolve()
-        # Allow directories for textbook type (chapter-per-file variant)
-        if document_type == "textbook":
+        # Allow directories for textbook and paper types
+        if document_type in ("textbook", "paper"):
             if not p.exists():
                 raise FileNotFoundError(f"Path not found: {p}")
         elif not p.is_file():
@@ -178,6 +178,109 @@ class Indexer:
         # Pass skip_bib=True because bibliographic data is already preserved
         # in the sidecar; we don't want pdf2bib to fail on non-pdf files.
         return self.add_file(rel, document_type=document_type, skip_bib=True)
+
+    def convert_to_directory(
+        self,
+        doc_id: int,
+        supplement_path: str | Path,
+        supplement_name: str | None = None,
+    ) -> Optional[Document]:
+        """Convert a file-type paper to directory-type by adding a supplement.
+
+        Creates a directory from the paper's filename, moves the PDF into it
+        as the primary, moves the supplement into the directory, writes the
+        sidecar, and re-indexes as a directory-type paper.
+
+        Returns the updated Document or None on failure.
+        """
+        sup_p = (self.home / supplement_path).resolve()
+        if not sup_p.is_file():
+            raise FileNotFoundError(f"Supplement file not found: {sup_p}")
+
+        doc = self.repo.get_by_id(doc_id)
+        if doc is None:
+            return None
+
+        if doc.source_type == "directory":
+            # Already a directory — just add the supplement directly
+            return self._add_supplement_to_directory(doc, sup_p, supplement_name)
+
+        if doc.source_type == "reference":
+            raise ValueError("Cannot convert reference-type paper to directory")
+
+        # Resolve the current file path
+        old_p = (self.home / doc.path).resolve()
+        if not old_p.is_file():
+            logger.error("Paper file not found at %s", old_p)
+            return None
+
+        # Create directory from paper filename (without extension)
+        new_dir = old_p.parent / doc.filename.rsplit(".", 1)[0]
+        new_dir.mkdir(parents=True, exist_ok=True)
+
+        # Move the primary PDF into the directory
+        primary_name = old_p.name
+        shutil.move(str(old_p), str(new_dir / primary_name))
+
+        # Move the sidecar if it exists
+        old_sidecar = sidecar_path(old_p, doc.source_type)
+        new_sidecar = sidecar_path(new_dir, "directory")
+        if old_sidecar.is_file():
+            shutil.move(str(old_sidecar), str(new_sidecar))
+
+        # Move the supplement into the directory
+        sup_filename = supplement_name or sup_p.name
+        shutil.move(str(sup_p), str(new_dir / sup_filename))
+
+        # Write sidecar with primary and supplements info
+        existing_meta = load_sidecar(new_sidecar)
+        existing_meta["primary"] = primary_name
+        existing_meta["supplements"] = {
+            "0": {"file": sup_filename, "name": sup_filename.replace(".pdf", "").replace("_", " ").title()}
+        }
+        write_sidecar(new_sidecar, existing_meta)
+
+        # Update DB path and source_type
+        new_rel = str(new_dir.relative_to(self.home))
+        self.repo.rename(doc.path, new_rel)
+        self.repo.update_document(doc_id, source_type="directory")
+
+        # Re-index as directory-type paper
+        return self.add_file(new_rel, document_type="paper", skip_bib=True)
+
+    def _add_supplement_to_directory(
+        self, doc: "Document", supplement_path: Path, supplement_name: str | None
+    ) -> Optional[Document]:
+        """Add a supplement to an existing directory-type paper."""
+        from .handlers import get_handler
+
+        if not supplement_path.is_file():
+            raise FileNotFoundError(f"Supplement file not found: {supplement_path}")
+
+        # Get the directory path
+        dir_p = (self.home / doc.path).resolve()
+        if not dir_p.is_dir():
+            logger.error("Paper directory not found at %s", dir_p)
+            return None
+
+        # Copy supplement into directory (don't move — file might be elsewhere)
+        sup_filename = supplement_name or supplement_path.name
+        shutil.copy2(str(supplement_path), str(dir_p / sup_filename))
+
+        # Update sidecar to include new supplement
+        sidecar = sidecar_path(dir_p, "directory")
+        meta = load_sidecar(sidecar)
+        supplements = meta.get("supplements", {})
+        new_index = len(supplements)
+        supplements[str(new_index)] = {
+            "file": sup_filename,
+            "name": sup_filename.replace(".pdf", "").replace("_", " ").title(),
+        }
+        meta["supplements"] = supplements
+        write_sidecar(sidecar, meta)
+
+        # Re-index the directory to pick up the new supplement
+        return self.add_file(doc.path, document_type="paper", skip_bib=True)
 
     # ── metadata editing ────────────────────────────────────────
 
