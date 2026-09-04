@@ -15,6 +15,7 @@ from docsearch.core.indexer import Indexer
 from docsearch.core.models import Document
 from docsearch.core.repository import Repository
 from docsearch.core.sidecars import load_sidecar, sidecar_path
+from docsearch.core import slicing
 
 
 @click.group(name="meta")
@@ -199,3 +200,111 @@ def _emit(data: dict, key: str, label: str) -> None:
         raise click.ClickException(f"'{key}' is not set on {label}. Available keys: {available}")
     value = data[key]
     click.echo(value if isinstance(value, str) else json.dumps(value, indent=2))
+
+
+@meta.command(name="list-sections")
+@click.argument("filepath")
+@click.pass_obj
+def meta_list_sections(ctx: dict, filepath: str) -> None:
+    """List document sections with line ranges and counts."""
+    config = ctx["config"]
+    repo = Repository(str(config.db_path), config.home)
+    try:
+        doc, _ = _require_indexed(repo, config, filepath)
+
+        if doc.source_type == "directory":
+            raise click.ClickException(
+                f"Sections are not supported for directory-type document '{doc.path}'."
+            )
+
+        sections = slicing.get_sections_map(doc.combined_metadata)
+        if not sections:
+            click.echo(f"No sections defined on {doc.path}")
+            return
+
+        text_lines = slicing.split_lines(doc.full_text)
+        total = len(text_lines)
+
+        # Header
+        click.echo(f"{'#':<5} {'Name':<30} {'Lines':<15} {'Count':<8}")
+        click.echo("-" * 58)
+        for sec in sections:
+            end = sec["end"] if sec["end"] is not None else total
+            count = max(0, end - sec["start"])
+            lines_str = f"{sec['start']}–{sec['end'] if sec['end'] is not None else 'EOF'}"
+            click.echo(f"{sec['index']:<5} {sec['name']:<30} {lines_str:<15} {count:<8}")
+    finally:
+        repo.close()
+
+
+@meta.command(name="set-section")
+@click.argument("filepath")
+@click.option("--name", "-n", required=True, help="Section name.")
+@click.option("--start", "-s", required=True, type=int, help="Start line (0-based, inclusive).")
+@click.option("--end", "-e", default=None, type=int, help="End line (inclusive). None = to EOF.")
+@click.pass_obj
+def meta_set_section(ctx: dict, filepath: str, name: str, start: int, end: int | None) -> None:
+    """Add a section to an indexed document. Index is auto-incremented."""
+    config = ctx["config"]
+    repo = Repository(str(config.db_path), config.home)
+    try:
+        doc, doc_id = _require_indexed(repo, config, filepath)
+
+        if doc.source_type == "directory":
+            raise click.ClickException(
+                f"Sections are not supported for directory-type document '{doc.path}'."
+            )
+
+        current = slicing.get_sections_map(doc.combined_metadata)
+        new_index = max((s["index"] for s in current), default=-1) + 1
+
+        sections_dict = doc.sidecar_metadata.get("sections", {}) or {}
+        sections_dict[str(new_index)] = {
+            "name": name,
+            "start": start,
+            "end": end,
+        }
+
+        indexer = Indexer(repo, config.home)
+        indexer.set_metadata_key(doc_id, "sections", sections_dict)
+
+        click.echo(f"Added section '{name}' (index={new_index}, lines {start}–{end if end is not None else 'EOF'}) on {doc.path}")
+    finally:
+        repo.close()
+
+
+@meta.command(name="delete-section")
+@click.argument("filepath")
+@click.argument("section_index", type=int)
+@click.pass_obj
+def meta_delete_section(ctx: dict, filepath: str, section_index: int) -> None:
+    """Delete a section by index. Remaining sections are re-indexed from 0."""
+    config = ctx["config"]
+    repo = Repository(str(config.db_path), config.home)
+    try:
+        doc, doc_id = _require_indexed(repo, config, filepath)
+
+        if doc.source_type == "directory":
+            raise click.ClickException(
+                f"Sections are not supported for directory-type document '{doc.path}'."
+            )
+
+        sections_dict = doc.sidecar_metadata.get("sections")
+        if not sections_dict or str(section_index) not in sections_dict:
+            raise click.ClickException(
+                f"Section {section_index} not found on {doc.path}. "
+                f"Available: {[k for k in sections_dict] if sections_dict else '(none)'}"
+            )
+
+        del sections_dict[str(section_index)]
+        reindexed = slicing.reindex_sections(sections_dict)
+
+        indexer = Indexer(repo, config.home)
+        if reindexed:
+            indexer.set_metadata_key(doc_id, "sections", reindexed)
+        else:
+            indexer.delete_metadata_key(doc_id, "sections")
+
+        click.echo(f"Removed section {section_index} from {doc.path}")
+    finally:
+        repo.close()

@@ -274,6 +274,40 @@ def _format_pages(start: int | None, end: int | None) -> str:
         return f"–{end}"
     return ""
 
+class SectionInfo(BaseModel):
+    """Metadata for a single document section."""
+    index: int
+    name: str
+    start: int
+    end: int | None = None  # None means "to end of document"
+    line_count: int
+
+
+class SectionContentResponse(BaseModel):
+    """A document section with its extracted text."""
+    id: int
+    path: str
+    section_index: int
+    section_name: str
+    start: int
+    end: int | None = None
+    content: str
+
+
+class SectionListResponse(BaseModel):
+    """List of sections for a document."""
+    id: int
+    path: str
+    sections: list[SectionInfo]
+
+
+class SetSectionRequest(BaseModel):
+    """Request to add a new section to a document."""
+    name: str
+    start: int
+    end: int | None = None  # None means "to end of document"
+
+
 class ChapterResponse(BaseModel):
     """Metadata for a single textbook chapter (no full_text)."""
     id: int

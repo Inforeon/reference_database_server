@@ -20,11 +20,16 @@ from docsearch.server.schemas import (
     MetaPatch,
     MoveDocumentRequest,
     MoveDocumentResponse,
+    SectionContentResponse,
+    SectionInfo,
+    SectionListResponse,
+    SetSectionRequest,
     UploadResponse,
     _extract_title,
     _extract_year,
     _format_author_slim,
 )
+from docsearch.core import slicing
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 
@@ -195,20 +200,214 @@ async def get_document(
 @router.get("/{doc_id}/content", response_model=ContentResponse)
 async def get_content(
     doc_id: int,
+    lines: str | None = Query(None, description="Comma-separated line ranges, e.g. '0-99,200-299'"),
     config = Depends(get_config),
 ) -> ContentResponse:
-    """Get the extracted text content of a document."""
+    """Get the extracted text content of a document.
+
+    Optionally slice by line numbers using the ``lines`` query parameter.
+    Ranges are inclusive on both ends (e.g. ``"0-99,200-299"``).  A bare number
+    selects a single line.
+    """
     repo = Repository(str(config.db_path), config.home)
     try:
         doc = repo.get_by_id(doc_id)
         if not doc:
             raise HTTPException(status_code=404, detail="Document not found")
+
+        content = doc.full_text
+        if lines:
+            text_lines = slicing.split_lines(doc.full_text)
+            content = slicing.slice_lines(text_lines, lines)
+
         return ContentResponse(
             id=doc.id,
             path=doc.path,
             filename=doc.filename,
-            content=doc.full_text,
+            content=content,
         )
+    finally:
+        repo.close()
+
+
+# ── Section endpoints ───────────────────────────────────────────────
+
+def _reject_directory_source(doc: Document) -> None:
+    """Raise 400 if the document is a directory-type (no full_text to slice)."""
+    if doc.source_type == "directory":
+        raise HTTPException(
+            status_code=400,
+            detail="Sections are not supported for directory-type documents.",
+        )
+
+
+@router.get("/{doc_id}/sections", response_model=SectionListResponse)
+async def list_sections(
+    doc_id: int,
+    config = Depends(get_config),
+) -> SectionListResponse:
+    """List document sections with line ranges and counts."""
+    repo = Repository(str(config.db_path), config.home)
+    try:
+        doc = repo.get_by_id(doc_id)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+        _reject_directory_source(doc)
+
+        text_lines = slicing.split_lines(doc.full_text)
+        sections_map = slicing.get_sections_map(doc.combined_metadata)
+
+        info_list: list[SectionInfo] = []
+        for sec in sections_map:
+            if sec["end"] is not None:
+                line_count = sec["end"] - sec["start"] + 1  # inclusive bounds
+            else:
+                line_count = len(text_lines) - sec["start"]
+            if line_count < 0:
+                line_count = 0
+            info_list.append(SectionInfo(
+                index=sec["index"],
+                name=sec["name"],
+                start=sec["start"],
+                end=sec["end"],
+                line_count=line_count,
+            ))
+
+        return SectionListResponse(
+            id=doc.id,
+            path=doc.path,
+            sections=info_list,
+        )
+    finally:
+        repo.close()
+
+
+@router.get("/{doc_id}/sections/{section_index}", response_model=SectionContentResponse)
+async def get_section(
+    doc_id: int,
+    section_index: int,
+    config = Depends(get_config),
+) -> SectionContentResponse:
+    """Get the text content of a specific section by index."""
+    repo = Repository(str(config.db_path), config.home)
+    try:
+        doc = repo.get_by_id(doc_id)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+        _reject_directory_source(doc)
+
+        sections_map = slicing.get_sections_map(doc.combined_metadata)
+        sec = next((s for s in sections_map if s["index"] == section_index), None)
+        if sec is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Section {section_index} not found. "
+                       f"Available: {[s['index'] for s in sections_map]}",
+            )
+
+        text_lines = slicing.split_lines(doc.full_text)
+        content = slicing.get_section_text(text_lines, sec)
+
+        return SectionContentResponse(
+            id=doc.id,
+            path=doc.path,
+            section_index=sec["index"],
+            section_name=sec["name"],
+            start=sec["start"],
+            end=sec["end"],
+            content=content,
+        )
+    finally:
+        repo.close()
+
+
+@router.post("/{doc_id}/sections", response_model=SectionListResponse)
+async def add_section(
+    doc_id: int,
+    body: SetSectionRequest,
+    config = Depends(get_config),
+) -> SectionListResponse:
+    """Add a new section to a document. Index is auto-incremented."""
+    repo = Repository(str(config.db_path), config.home)
+    try:
+        doc = repo.get_by_id(doc_id)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+        _reject_directory_source(doc)
+
+        indexer = Indexer(repo, config.home)
+        current = slicing.get_sections_map(doc.combined_metadata)
+        new_index = max((s["index"] for s in current), default=-1) + 1
+
+        sections_dict = doc.sidecar_metadata.get("sections", {}) or {}
+        sections_dict[str(new_index)] = {
+            "name": body.name,
+            "start": body.start,
+            "end": body.end,
+        }
+        indexer.set_metadata_key(doc_id, "sections", sections_dict)
+
+        # Reload for response
+        updated = repo.get_by_id(doc_id)
+        text_lines = slicing.split_lines(updated.full_text)
+        sections_map = slicing.get_sections_map(updated.combined_metadata)
+
+        info_list: list[SectionInfo] = []
+        for sec in sections_map:
+            if sec["end"] is not None:
+                line_count = sec["end"] - sec["start"] + 1  # inclusive bounds
+            else:
+                line_count = len(text_lines) - sec["start"]
+            if line_count < 0:
+                line_count = 0
+            info_list.append(SectionInfo(
+                index=sec["index"],
+                name=sec["name"],
+                start=sec["start"],
+                end=sec["end"],
+                line_count=line_count,
+            ))
+
+        return SectionListResponse(
+            id=updated.id,
+            path=updated.path,
+            sections=info_list,
+        )
+    finally:
+        repo.close()
+
+
+@router.delete("/{doc_id}/sections/{section_index}", status_code=204)
+async def delete_section(
+    doc_id: int,
+    section_index: int,
+    config = Depends(get_config),
+) -> None:
+    """Delete a section by index. Remaining sections are re-indexed from 0."""
+    repo = Repository(str(config.db_path), config.home)
+    try:
+        doc = repo.get_by_id(doc_id)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+        _reject_directory_source(doc)
+
+        sections_dict = doc.sidecar_metadata.get("sections")
+        if not sections_dict or str(section_index) not in sections_dict:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Section {section_index} not found.",
+            )
+
+        # Remove and reindex
+        del sections_dict[str(section_index)]
+        reindexed = slicing.reindex_sections(sections_dict)
+
+        indexer = Indexer(repo, config.home)
+        if reindexed:
+            indexer.set_metadata_key(doc_id, "sections", reindexed)
+        else:
+            indexer.delete_metadata_key(doc_id, "sections")
+
     finally:
         repo.close()
 
