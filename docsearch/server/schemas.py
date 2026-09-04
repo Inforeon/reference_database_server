@@ -85,6 +85,11 @@ class AddGenericReferenceRequest(BaseModel):
 
 # ── Textbook-specific requests ───────────────────────────────────
 
+class SetChaptersRequest(BaseModel):
+    """Request to redefine chapter breakpoints for a file-type textbook."""
+    breakpoints: str  # JSON string: list [5,10] or dict {"Intro": 5, "Methods": null}
+
+
 class AddTextbookRequest(BaseModel):
     """Request to add a textbook to the index."""
     filepath: str

@@ -15,12 +15,14 @@ from docsearch.extractors import load_extractors
 
 @click.group(name="textbooks")
 def textbooks() -> None:
-    """Manage textbooks (add, upload, reference)."""
+    """Manage textbooks (add, reference, chapters)."""
     pass
 
 
 @textbooks.command()
 @click.argument("filepath")
+@click.option("-n", "--name", help="Filename to save as when copying (default: original name).")
+@click.option("-D", "--directory", default="", help="Subdirectory within database home to copy into before indexing.")
 @click.option(
     "-b", "--breakpoints", default=None,
     help="Chapter breakpoints as JSON. List [5,10,15] for page boundaries "
@@ -33,91 +35,56 @@ def textbooks() -> None:
          "when possible; quote to keep a string: -m isbn='\"0000000000\"'.",
 )
 @click.pass_obj
-def add(ctx: dict, filepath: str, breakpoints: str | None, meta_pairs: tuple[str, ...]) -> None:
-    """Add a textbook to the index."""
+def add(ctx: dict, filepath: str, name: str | None, directory: str,
+        breakpoints: str | None, meta_pairs: tuple[str, ...]) -> None:
+    """Add a textbook to the index.
+
+    If ``--directory`` or ``--name`` is given, the file is copied into the
+    database home before indexing.  Otherwise the file is indexed in place.
+    """
     config = ctx["config"]
-    rel_filepath = resolve_user_path_to_home_relative(config, filepath, require_exists=True)
+    extra_meta = parse_meta_pairs(meta_pairs) or {}
+
+    if breakpoints is not None:
+        if "chapters" in extra_meta:
+            click.echo(
+                "Warning: both --breakpoints and -m chapters=... provided; "
+                "--breakpoints takes precedence, ignoring -m chapters.",
+                err=True,
+            )
+        extra_meta["chapters"] = parse_breakpoints(breakpoints)
+
+    # Determine whether to copy or index in place
+    if directory or name:
+        # Copy file into database home
+        src_path = Path(filepath).resolve()
+        if not src_path.is_file():
+            raise click.ClickException(f"Source file does not exist: {filepath}")
+
+        target_dir = config.home / directory if directory else config.home
+        target_dir = target_dir.resolve()
+        if not str(target_dir).startswith(str(config.home)):
+            raise click.ClickException("Directory must be within the database home.")
+        if not target_dir.is_dir():
+            raise click.ClickException(f"Directory does not exist: {target_dir}")
+
+        filename = name or src_path.name
+        target_path = target_dir / filename
+
+        shutil.copy2(str(src_path), str(target_path))
+        rel_filepath = str(target_path.relative_to(config.home))
+    else:
+        # Index in place
+        rel_filepath = resolve_user_path_to_home_relative(config, filepath, require_file=True)
+
     repo = Repository(str(config.db_path), config.home)
     try:
         indexer = Indexer(repo, config.home)
-        extra_meta = parse_meta_pairs(meta_pairs) or {}
-
-        if breakpoints is not None:
-            if "chapters" in extra_meta:
-                click.echo(
-                    "Warning: both --breakpoints and -m chapters=... provided; "
-                    "--breakpoints takes precedence, ignoring -m chapters.",
-                    err=True,
-                )
-            extra_meta["chapters"] = parse_breakpoints(breakpoints)
-
         doc = indexer.add_file(rel_filepath, document_type="textbook", extra_metadata=extra_meta or None)
         if doc:
             click.echo(f"Indexed: {doc.path} (type={doc.document_type})")
         else:
             click.echo(f"Failed to index: {filepath}", err=True)
-    finally:
-        repo.close()
-
-
-@textbooks.command()
-@click.argument("file", type=click.File("rb"))
-@click.option("-n", "--name", help="Filename to save as (default: original name).")
-@click.option("-D", "--directory", default="", help="Subdirectory within database home to save into.")
-@click.option(
-    "-b", "--breakpoints", default=None,
-    help="Chapter breakpoints as JSON. List [5,10,15] for page boundaries "
-         "(auto-named chapters), or dict {\"Intro\":5,\"Methods\":null} for named chapters.",
-)
-@click.option(
-    "-m", "--meta", "meta_pairs",
-    multiple=True,
-    help="Extra metadata as KEY=VALUE (repeatable). Values are parsed as JSON "
-         "when possible; quote to keep a string: -m isbn='\"0000000000\"'.",
-)
-@click.pass_obj
-def upload(ctx: dict, file, name: str | None, directory: str, breakpoints: str | None, meta_pairs: tuple[str, ...]) -> None:
-    """Upload a textbook and index it automatically."""
-    import shutil
-    config = ctx["config"]
-
-    target_dir = config.home / directory if directory else config.home
-    target_dir = target_dir.resolve()
-    if not str(target_dir).startswith(str(config.home)):
-        click.echo("Directory must be within the database home.", err=True)
-        return
-
-    if not target_dir.is_dir():
-        click.echo(f"Directory does not exist: {target_dir}", err=True)
-        return
-
-    original_name = Path(file.name).name if hasattr(file, "name") and file.name else "uploaded.pdf"
-    filename = name or original_name
-    target_path = target_dir / filename
-
-    with open(target_path, "wb") as f:
-        shutil.copyfileobj(file, f)
-
-    repo = Repository(str(config.db_path), config.home)
-    try:
-        indexer = Indexer(repo, config.home)
-        extra_meta = parse_meta_pairs(meta_pairs) or {}
-
-        if breakpoints is not None:
-            if "chapters" in extra_meta:
-                click.echo(
-                    "Warning: both --breakpoints and -m chapters=... provided; "
-                    "--breakpoints takes precedence, ignoring -m chapters.",
-                    err=True,
-                )
-            extra_meta["chapters"] = parse_breakpoints(breakpoints)
-
-        rel_target = str(target_path.relative_to(config.home))
-        doc = indexer.add_file(rel_target, document_type="textbook", extra_metadata=extra_meta or None)
-        if doc:
-            click.echo(f"Uploaded & indexed: {doc.path}")
-        else:
-            click.echo(f"Failed to index uploaded file: {target_path}", err=True)
     finally:
         repo.close()
 
@@ -383,6 +350,113 @@ def chapter(ctx: dict, filepath: str, index: int) -> None:
 
         click.echo(f"Chapter {ch.chapter_index}: {ch.title} (pp. {ch.start_page}–{ch.end_page})\n")
         click.echo(ch.full_text)
+    finally:
+        repo.close()
+
+
+@textbooks.command(name="set-chapters")
+@click.argument("filepath")
+@click.option(
+    "-b", "--breakpoints", required=True,
+    help="Chapter breakpoints as JSON. List [5,10,15] for page boundaries "
+         "(auto-named chapters), or dict {\"Intro\":5,\"Methods\":null} for named chapters.",
+)
+@click.pass_obj
+def set_chapters(ctx: dict, filepath: str, breakpoints: str) -> None:
+    """Redefine chapter breakpoints for a file-type textbook.
+
+    Deletes existing chapters and re-extracts from the PDF using new breakpoints.
+    """
+    config = ctx["config"]
+    rel_filepath = resolve_user_path_to_home_relative(config, filepath, require_file=True)
+    repo = Repository(str(config.db_path), config.home)
+    try:
+        doc = repo.get(rel_filepath)
+        if not doc:
+            click.echo(f"Not indexed: {filepath}", err=True)
+            return
+        if doc.document_type != "textbook":
+            click.echo(f"Not a textbook: {filepath} (type={doc.document_type})", err=True)
+            return
+        if doc.source_type == "directory":
+            click.echo(
+                f"Cannot set breakpoints on directory-type textbook '{doc.path}'. "
+                "Use attach-chapter/detach-chapter for directory-type textbooks.",
+                err=True,
+            )
+            return
+
+        abs_path = config.home / doc.path
+        if not abs_path.is_file():
+            click.echo(f"Textbook file not found on disk: {abs_path}", err=True)
+            return
+
+        # Parse breakpoints into chapters list
+        chapters_list = parse_breakpoints(breakpoints)
+
+        # Use the handler to detect and insert chapters with proper page resolution
+        from docsearch.core.handlers import TextbookDocumentHandler
+        from docsearch.core.indexer import Indexer
+
+        handler = TextbookDocumentHandler(repo, config.home)
+        detected = handler._detect_chapters(abs_path, {"chapters": chapters_list})
+
+        # Delete existing chapters and insert new ones
+        repo.delete_chapters(doc.id)
+        handler._insert_file_chapters(abs_path, doc.id, detected)
+
+        # Update sidecar with new breakpoints
+        indexer = Indexer(repo, config.home)
+        indexer.set_metadata_key(doc.id, "chapters", chapters_list)
+
+        click.echo(f"Updated {len(detected)} chapters for {doc.path}")
+    finally:
+        repo.close()
+
+
+@textbooks.command(name="detach-chapter")
+@click.argument("doc_id", type=int)
+@click.argument("chapter_index", type=int)
+@click.pass_obj
+def detach_chapter(ctx: dict, doc_id: int, chapter_index: int) -> None:
+    """Remove a chapter from a directory-type textbook.
+
+    Deletes the database row and the physical file.
+    """
+    config = ctx["config"]
+    repo = Repository(str(config.db_path), config.home)
+    try:
+        doc = repo.get_by_id(doc_id)
+        if not doc:
+            click.echo(f"Document {doc_id} not found.", err=True)
+            return
+        if doc.document_type != "textbook":
+            click.echo(f"Not a textbook: type={doc.document_type}", err=True)
+            return
+        if doc.source_type != "directory":
+            click.echo(
+                f"Cannot detach chapter: textbook {doc.filename!r} is source_type '{doc.source_type}', not 'directory'. "
+                "Chapter detachment is only supported for directory-type textbooks.",
+                err=True,
+            )
+            return
+
+        chapter = repo.get_chapter(doc_id, chapter_index)
+        if not chapter:
+            click.echo(f"Chapter {chapter_index} not found.", err=True)
+            return
+
+        # Delete physical file if it exists
+        if chapter.file_path:
+            textbook_dir = config.home / doc.path
+            file_path = textbook_dir / chapter.file_path
+            if file_path.is_file():
+                file_path.unlink()
+
+        # Delete from database
+        repo.delete_chapter_by_id(chapter.id)
+
+        click.echo(f"Detached chapter {chapter_index}: {chapter.title}")
     finally:
         repo.close()
 

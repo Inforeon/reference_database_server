@@ -17,6 +17,7 @@ from docsearch.server.schemas import (
     AddTextbookRequest,
     ChapterContentResponse,
     ChapterResponse,
+    SetChaptersRequest,
     TextbookUploadResponse,
 )
 
@@ -474,6 +475,188 @@ async def upload_chapter(
             page_count=saved.page_count,
             file_path=saved.file_path,
             metadata=saved.combined_metadata(doc),
+        )
+    finally:
+        repo.close()
+
+
+# ── Chapter management endpoints ───────────────────────────────────
+
+def _parse_breakpoints_to_chapters(breakpoints_str: str) -> list[dict[str, Any]]:
+    """Parse breakpoints JSON string into chapters list.
+
+    Same logic as the upload endpoint. Accepts list [5,10] or dict {"Intro": 5}.
+    """
+    try:
+        breakpoints = json.loads(breakpoints_str)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="breakpoints must be valid JSON.")
+
+    if isinstance(breakpoints, dict):
+        sorted_items = sorted(
+            breakpoints.items(),
+            key=lambda x: (x[1] is None, x[1] or 0),
+        )
+        chapters: list[dict[str, Any]] = []
+        prev_end = 0
+        for i, (title, end_page) in enumerate(sorted_items):
+            chapters.append({
+                "title": title,
+                "start_page": prev_end,
+                "end_page": end_page,
+            })
+            if end_page is not None:
+                prev_end = end_page
+        return chapters
+
+    if isinstance(breakpoints, list):
+        chapters = []
+        prev_end = 0
+        for i, bp in enumerate(breakpoints):
+            chapters.append({
+                "title": f"Chapter {i + 1}",
+                "start_page": prev_end,
+                "end_page": bp,
+            })
+            prev_end = bp
+        chapters.append({
+            "title": f"Chapter {len(breakpoints) + 1}",
+            "start_page": prev_end,
+            "end_page": None,
+        })
+        return chapters
+
+    raise HTTPException(
+        status_code=400,
+        detail="breakpoints must be a JSON object or array.",
+    )
+
+
+@router.put("/{doc_id}/chapters", response_model=list[ChapterResponse])
+async def set_chapters(
+    doc_id: int,
+    breakpoints: str = Query(..., description="Chapter breakpoints as JSON. List [5,10] for page boundaries, or dict {\"Intro\": 5, \"Methods\": null} for named chapters."),
+    config = Depends(get_config),
+) -> list[ChapterResponse]:
+    """Redefine chapter breakpoints for a file-type textbook.
+
+    Deletes existing chapters and re-extracts from the PDF using new breakpoints.
+    Returns the updated list of chapters.
+    """
+    repo = Repository(str(config.db_path), config.home)
+    try:
+        doc = repo.get_by_id(doc_id)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found.")
+        if doc.document_type != "textbook":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Not a textbook: document {doc.filename!r} is type '{doc.document_type}'.",
+            )
+        if doc.source_type == "directory":
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot set breakpoints on directory-type textbook. "
+                       "Use chapter upload/delete for directory-type textbooks.",
+            )
+
+        abs_path = config.home / doc.path
+        if not abs_path.is_file():
+            raise HTTPException(status_code=404, detail="Textbook file not found on disk.")
+
+        # Parse breakpoints into chapters list
+        chapters_list = _parse_breakpoints_to_chapters(breakpoints)
+
+        # Use the handler to detect and insert chapters with proper page resolution
+        from docsearch.core.handlers import TextbookDocumentHandler
+
+        handler = TextbookDocumentHandler(repo, config.home)
+        detected = handler._detect_chapters(abs_path, {"chapters": chapters_list})
+
+        # Delete existing chapters and insert new ones
+        repo.delete_chapters(doc_id)
+        handler._insert_file_chapters(abs_path, doc_id, detected)
+
+        # Update sidecar with new breakpoints
+        from docsearch.core.indexer import Indexer
+        indexer = Indexer(repo, config.home)
+        indexer.set_metadata_key(doc_id, "chapters", chapters_list)
+
+        # Reload document for metadata merge
+        doc = repo.get_by_id(doc_id)
+        chapters = repo.get_chapters(doc_id)
+        return [
+            ChapterResponse(
+                id=ch.id,
+                textbook_id=ch.textbook_id,
+                chapter_index=ch.chapter_index,
+                title=ch.title,
+                chapter_type=ch.chapter_type or "range",
+                start_page=ch.start_page,
+                end_page=ch.end_page,
+                page_count=ch.page_count,
+                file_path=ch.file_path,
+                metadata=ch.combined_metadata(doc),
+            )
+            for ch in chapters
+        ]
+    finally:
+        repo.close()
+
+
+@router.delete("/{doc_id}/chapters/{chapter_index}", response_model=ChapterResponse)
+async def delete_chapter(
+    doc_id: int,
+    chapter_index: int,
+    config = Depends(get_config),
+) -> ChapterResponse:
+    """Delete a chapter from a directory-type textbook.
+
+    Removes the database row and deletes the physical file.
+    Returns the deleted chapter's metadata.
+    """
+    repo = Repository(str(config.db_path), config.home)
+    try:
+        doc = repo.get_by_id(doc_id)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found.")
+        if doc.document_type != "textbook":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Not a textbook: document {doc.filename!r} is type '{doc.document_type}'.",
+            )
+        if doc.source_type != "directory":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot delete chapter: textbook {doc.filename!r} is variant '{doc.source_type}', not 'directory'. "
+                       "Chapter deletion is only supported for directory-type textbooks.",
+            )
+
+        chapter = repo.get_chapter(doc_id, chapter_index)
+        if not chapter:
+            raise HTTPException(status_code=404, detail=f"Chapter {chapter_index} not found.")
+
+        # Delete physical file if it exists
+        if chapter.file_path:
+            textbook_dir = config.home / doc.path
+            file_path = textbook_dir / chapter.file_path
+            if file_path.is_file():
+                file_path.unlink()
+
+        # Delete from database
+        repo.delete_chapter_by_id(chapter.id)
+
+        return ChapterResponse(
+            id=chapter.id,
+            textbook_id=chapter.textbook_id,
+            chapter_index=chapter.chapter_index,
+            title=chapter.title,
+            chapter_type=chapter.chapter_type or "range",
+            start_page=chapter.start_page,
+            end_page=chapter.end_page,
+            page_count=chapter.page_count,
+            file_path=chapter.file_path,
+            metadata=chapter.combined_metadata(doc),
         )
     finally:
         repo.close()
