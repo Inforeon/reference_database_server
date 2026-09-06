@@ -337,9 +337,8 @@ class TestAddSection:
         )
         assert resp.status_code == 200
         data = resp.json()
-        assert len(data["sections"]) == 1
-        assert data["sections"][0]["index"] == 0
-        assert data["sections"][0]["name"] == "First Section"
+        assert data["added"] is True
+        assert data["section_index"] == 0
 
     def test_add_auto_increments_index(self, client, doc_with_sections: Document):
         """Adding to a doc with 3 sections (0,1,2) should create index 3."""
@@ -349,10 +348,8 @@ class TestAddSection:
         )
         assert resp.status_code == 200
         data = resp.json()
-        assert len(data["sections"]) == 4
-        new_sec = data["sections"][3]
-        assert new_sec["index"] == 3
-        assert new_sec["name"] == "Conclusion"
+        assert data["added"] is True
+        assert data["section_index"] == 3
 
     def test_add_400_directory_type(self, client, dir_type_textbook: Document):
         resp = client.post(

@@ -325,12 +325,12 @@ async def get_section(
         repo.close()
 
 
-@router.post("/{doc_id}/sections", response_model=SectionListResponse)
+@router.post("/{doc_id}/sections")
 async def add_section(
     doc_id: int,
     body: SetSectionRequest,
     config = Depends(get_config),
-) -> SectionListResponse:
+) -> dict:
     """Add a new section to a document. Index is auto-incremented."""
     repo = Repository(str(config.db_path), config.home)
     try:
@@ -350,33 +350,7 @@ async def add_section(
             "end": body.end,
         }
         indexer.set_metadata_key(doc_id, "sections", sections_dict)
-
-        # Reload for response
-        updated = repo.get_by_id(doc_id)
-        text_lines = slicing.split_lines(updated.full_text)
-        sections_map = slicing.get_sections_map(updated.combined_metadata)
-
-        info_list: list[SectionInfo] = []
-        for sec in sections_map:
-            if sec["end"] is not None:
-                line_count = sec["end"] - sec["start"] + 1  # inclusive bounds
-            else:
-                line_count = len(text_lines) - sec["start"]
-            if line_count < 0:
-                line_count = 0
-            info_list.append(SectionInfo(
-                index=sec["index"],
-                name=sec["name"],
-                start=sec["start"],
-                end=sec["end"],
-                line_count=line_count,
-            ))
-
-        return SectionListResponse(
-            id=updated.id,
-            path=updated.path,
-            sections=info_list,
-        )
+        return {"added": True, "section_index": new_index}
     finally:
         repo.close()
 
